@@ -1,0 +1,33 @@
+# Android / Gradle
+local.properties
+.gradle/
+build/
+captures/
+*.apk
+*.aab
+*.keystore
+*.jks
+
+# IDE
+.idea/
+*.iml
+.DS_Store
+
+# Local runtime / private config
+*.env
+.env
+!*.env.example
+server/.env
+keystore.properties
+android/keystore.properties
+
+# Build caches
+.kotlin/
+.cxx/
+
+# Local tool artifacts (not project source)
+.freebuff/
+.zcode/
+git repo/
+node_modules/
+*.iml.lfs

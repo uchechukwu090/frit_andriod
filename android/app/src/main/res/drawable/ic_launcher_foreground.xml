@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Launcher foreground: brand mark centred in the 72dp adaptive safe zone.
+     833x722 artwork scaled into a 72x62dp box (same aspect, no distortion),
+     leaving negative space on all four sides so masks never clip or stretch it.
+     Background (cream) is a separate layer. -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item
+        android:width="72dp"
+        android:height="62dp"
+        android:gravity="center">
+        <bitmap
+            android:src="@drawable/public_app_icon"
+            android:gravity="fill" />
+    </item>
+</layer-list>

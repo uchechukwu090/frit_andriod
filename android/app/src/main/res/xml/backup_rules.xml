@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Play-ready: exclude auth token prefs, secrets, face/PIN data, money cache + cached models from Google Drive backup. -->
+<full-backup-content>
+    <exclude domain="sharedpref" path="frit_prefs.xml" />
+    <!-- F-26/F-38e: Keystore-encrypted secrets cannot be restored on another device; veil/face + trading cache are sensitive. -->
+    <exclude domain="sharedpref" path="frit_secure.xml" />
+    <exclude domain="sharedpref" path="frit_veil.xml" />
+    <exclude domain="sharedpref" path="frit_veil_face.xml" />
+    <exclude domain="sharedpref" path="frit_trading_cache.xml" />
+    <exclude domain="file" path="models/" />
+    <exclude domain="database" path="." />
+</full-backup-content>
