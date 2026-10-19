@@ -1,0 +1,6 @@
+[submodule "server"]
+	path = server
+	url = https://github.com/uchechukwu090/frit-android.git
+[submodule "sandbox and docker"]
+	path = sandbox and docker
+	url = https://github.com/uchechukwu090/sandbox.git
