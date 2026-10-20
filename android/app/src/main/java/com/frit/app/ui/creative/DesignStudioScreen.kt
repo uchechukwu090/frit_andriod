@@ -53,6 +53,10 @@ fun DesignStudioScreen(onClose: () -> Unit = {}, onHandoff: (String) -> Unit = {
     var results by remember { mutableStateOf<List<Pair<String?, String?>>>(emptyList()) }
     var craftUsed by remember { mutableStateOf("") }
     var status by remember { mutableStateOf("") }
+    // Week 6 — Design Agent: research -> brief -> render -> verify.
+    var agentMode by remember { mutableStateOf(false) }
+    var briefLines by remember { mutableStateOf("") }
+    var verifyLine by remember { mutableStateOf("") }
 
     LaunchedEffect(Unit) {
         engine.takeHandoff()?.let { (m, k) ->
@@ -238,10 +242,80 @@ fun DesignStudioScreen(onClose: () -> Unit = {}, onHandoff: (String) -> Unit = {
                     }
                 }
             }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(checked = agentMode, onCheckedChange = { agentMode = it })
+                Text(
+                    "Agent mode — research references, write a detailed brief, verify the render",
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+            if (agentMode) Text(
+                "Slower (10–90s). Charges one image credit per delivered design, never on failure.",
+                style = MaterialTheme.typography.labelSmall
+            )
+            if (briefLines.isNotBlank()) Text(briefLines, style = MaterialTheme.typography.labelSmall)
+            if (verifyLine.isNotBlank()) Text(verifyLine, style = MaterialTheme.typography.labelSmall)
             Button(
                 onClick = {
                     scope.launch(Dispatchers.IO) {
-                        busy = true; results = emptyList()
+                        busy = true; results = emptyList(); briefLines = ""; verifyLine = ""
+                        if (agentMode) {
+                            try {
+                                val goalText = (if (useCustomBrief) customBrief else headline).ifBlank { "graphic design" }
+                                val selAspect = templates.find { it.id == template }?.aspect ?: "1:1"
+                                val r = JSONObject(NetworkClient.designAgent(
+                                    goal = goalText,
+                                    headline = if (useCustomBrief) null else headline.ifBlank { null },
+                                    body = if (useCustomBrief) null else body.ifBlank { null },
+                                    cta = if (useCustomBrief) null else cta.ifBlank { null },
+                                    palette = if (palette.isNotBlank()) palette else selectedColor,
+                                    brandkitId = kitId,
+                                    aspectRatio = selAspect,
+                                    font = selectedFont,
+                                    inspiration = true,
+                                    verify = true
+                                ))
+                                val bref = r.optJSONObject("brief")
+                                val lay = bref?.optJSONObject("layout")
+                                val pal = bref?.optJSONArray("palette")
+                                val typo = bref?.optJSONArray("typography")
+                                val refsRead = r.optJSONObject("inspiration")?.optInt("read") ?: 0
+                                briefLines = buildString {
+                                    if (lay != null) append("Layout: ${lay.optString("grid")} • ${lay.optString("alignment")} • focal ${lay.optString("focal")}\n")
+                                    if (pal != null) {
+                                        append("Palette: ")
+                                        for (i in 0 until pal.length()) {
+                                            val p = pal.optJSONObject(i) ?: continue
+                                            append("${p.optString("hex")} ${p.optInt("share_pct")}%  ")
+                                        }
+                                        append("\n")
+                                    }
+                                    if (typo != null) {
+                                        for (i in 0 until typo.length()) {
+                                            val t = typo.optJSONObject(i) ?: continue
+                                            append("${t.optString("role")}: ${t.optString("font")} ${t.optInt("size_px")}px\n")
+                                        }
+                                    }
+                                    append("References read: $refsRead")
+                                }.trim()
+                                val rr = r.optJSONObject("render")
+                                val src = rr?.optString("image_url").orEmpty().ifBlank { rr?.optString("image_b64").orEmpty() }
+                                val url: String? = if (src.isBlank()) null else if (src.startsWith("http")) src else "data:image/png;base64,$src"
+                                val v = r.optJSONObject("verification")
+                                val issues = v?.optJSONArray("issues")
+                                verifyLine = when {
+                                    v == null || !v.optBoolean("checked", false) -> "Review: not run — this render is unverified"
+                                    v.optBoolean("pass") -> "Review: PASS ${(v.optDouble("score", 0.0) * 100).toInt()}%"
+                                    else -> "Review: ${(v.optDouble("score", 0.0) * 100).toInt()}% — " +
+                                        (0 until (issues?.length() ?: 0)).joinToString("; ") { issues?.optString(it).orEmpty() }
+                                }
+                                results = listOf(url to (rr?.optString("model_used").orEmpty().ifBlank { "design agent" }))
+                                status = if (url != null) "Agent finished — ${r.optInt("attempts", 1)} render attempt(s)"
+                                else "Agent could not render: " + r.optString("error")
+                            } catch (e: Exception) { status = e.message ?: "Agent failed" }
+                            busy = false
+                            return@launch
+                        }
                         try {
                             val refs = JSONArray(); styleRefs.forEach { refs.put(it) }
                             val effHeadline = if (useCustomBrief) customBrief else headline
@@ -270,7 +344,7 @@ fun DesignStudioScreen(onClose: () -> Unit = {}, onHandoff: (String) -> Unit = {
                 modifier = Modifier.fillMaxWidth(), enabled = (if (useCustomBrief) customBrief else headline).isNotBlank() && !busy
             ) {
                 if (busy) CircularProgressIndicator(Modifier.size(18.dp))
-                else { Icon(Icons.Default.Brush, null); Spacer(Modifier.width(6.dp)); Text("Design It") }
+                else { Icon(Icons.Default.Brush, null); Spacer(Modifier.width(6.dp)); Text(if (agentMode) "Run Design Agent" else "Design It") }
             }
             if (status.isNotBlank()) Text(status, style = MaterialTheme.typography.bodySmall)
             if (craftUsed.isNotBlank()) Text("Craft: $craftUsed", style = MaterialTheme.typography.labelSmall)

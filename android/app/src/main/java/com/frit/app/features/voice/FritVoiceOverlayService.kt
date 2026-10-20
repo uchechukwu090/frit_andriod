@@ -74,6 +74,7 @@ import androidx.savedstate.SavedStateRegistryOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import com.frit.app.R
 import com.frit.app.core.ChatSession
+import com.frit.app.core.Diag
 import com.frit.app.core.FritMode
 import com.frit.app.core.IntegrationCoordinator
 import com.frit.app.core.SubAgentOrchestrator
@@ -86,6 +87,7 @@ import com.frit.app.features.market.MT5Agent
 import com.frit.app.features.market.MarketAnalysisEngine
 import com.frit.app.features.memory.MemoryEngine
 import com.frit.app.features.vision.VisionEngine
+import com.frit.app.ui.normalizeAssistantReplyForUi
 import com.frit.app.ui.theme.*
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -210,16 +212,20 @@ class FritVoiceOverlayService : Service() {
         // Veil stranger guard: a pickup pauses tasks by killing live voice turns.
         try {
             com.frit.app.features.veil.VeilManager.onTasksPaused {
-                try {
-                    chatTaskJob?.cancel()
-                } catch (_: Exception) { }
-                chatTaskJob = null
-                try {
+                cancelChatTasks()
+                runCatching {
                     replyAnimating.value = false
                     fritMode.value = FritMode.IDLE
-                } catch (_: Exception) { }
+                }
             }
-        } catch (_: Exception) { }
+        } catch (e: Exception) {
+            // F-19 (MEDIUM): this catch used to be empty, so a failure to
+            // install the hook meant the "stranger picks up the phone -> pause
+            // everything" safety net simply did not exist — with nothing on
+            // screen or in the log to say so. Log it loudly.
+            Log.e(TAG, "failed to install the Veil pause hook", e)
+            Diag.warn(TAG, "veil_pause_hook", e)
+        }
 
         // Load preferences safely after context is attached
         baseUrl.value = prefs.getString("base_url", com.frit.app.core.FritConfig.BASE_URL) ?: com.frit.app.core.FritConfig.BASE_URL
@@ -243,55 +249,71 @@ class FritVoiceOverlayService : Service() {
                     android.widget.Toast.makeText(this, "Please grant 'Display over other apps' permission for FRIT.", android.widget.Toast.LENGTH_LONG).show()
                 }
             } catch (e: Exception) {
+                Log.e(TAG, "overlay-permission settings intent failed", e)
                 try {
                     val intent = Intent(android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                     startActivity(intent)
-                } catch (_: Exception) {}
+                } catch (e2: Exception) {
+                    // F-19 (LOW): a total failure to open any settings page was
+                    // invisible. Log it — the user is otherwise told to grant
+                    // a permission with no way to get there.
+                    Log.e(TAG, "could not open overlay-permission settings", e2)
+                    Diag.warn(TAG, "overlay_permission_settings", e2)
+                }
             }
             stopSelf()
         }
 
         // Initialize dependencies that were in MainActivity
-        try {
-            com.frit.app.core.CrashGuard.install(this)
-            com.frit.app.core.TokenStore.init(this)
-            com.frit.app.core.PrivacyGuard.init(this)
-            com.frit.app.core.ChatHistory.init(this)
-            ChatSession.init(this)
-            IntegrationCoordinator.init(this)
-            VoiceEngine.init(this)
-            VisionEngine.init(this)
-            AutomationEngine.init(this)
-            com.frit.app.features.automation.AutomationScheduler.init(this)
-            MemoryEngine.init(this)
-            SubAgentOrchestrator.init(this)
-            MT5Agent.init(this)
-            com.frit.app.core.LocalInferenceEngine.init(this)
+        // F-19 (MEDIUM): these used to be ONE try block, so a single failure
+        // (say VisionEngine.init throwing) silently skipped every later init —
+        // including the base-URL wiring below, which left the overlay talking
+        // to the DEFAULT backend instead of the user's configured one. Each
+        // subsystem is now initialised independently so one failure cannot
+        // take the rest down with it.
+        try { com.frit.app.core.CrashGuard.install(this) } catch (e: Exception) { Diag.warn(TAG, "init_crashguard", e) }
+        try { com.frit.app.core.TokenStore.init(this) } catch (e: Exception) { Diag.warn(TAG, "init_tokenstore", e) }
+        try { com.frit.app.core.PrivacyGuard.init(this) } catch (e: Exception) { Diag.warn(TAG, "init_privacyguard", e) }
+        try { com.frit.app.core.ChatHistory.init(this) } catch (e: Exception) { Diag.warn(TAG, "init_chathistory", e) }
+        try { ChatSession.init(this) } catch (e: Exception) { Diag.warn(TAG, "init_chatsession", e) }
+        try { IntegrationCoordinator.init(this) } catch (e: Exception) { Diag.warn(TAG, "init_coordinator", e) }
+        try { VoiceEngine.init(this) } catch (e: Exception) { Diag.warn(TAG, "init_voiceengine", e) }
+        try { VisionEngine.init(this) } catch (e: Exception) { Diag.warn(TAG, "init_visionengine", e) }
+        try { AutomationEngine.init(this) } catch (e: Exception) { Diag.warn(TAG, "init_automationengine", e) }
+        try { com.frit.app.features.automation.AutomationScheduler.init(this) } catch (e: Exception) { Diag.warn(TAG, "init_scheduler", e) }
+        try { MemoryEngine.init(this) } catch (e: Exception) { Diag.warn(TAG, "init_memory", e) }
+        try { SubAgentOrchestrator.init(this) } catch (e: Exception) { Diag.warn(TAG, "init_subagent", e) }
+        try { MT5Agent.init(this) } catch (e: Exception) { Diag.warn(TAG, "init_mt5agent", e) }
+        try { com.frit.app.core.LocalInferenceEngine.init(this) } catch (e: Exception) { Diag.warn(TAG, "init_localengine", e) }
 
-            // The wake-word service holds the microphone. While the overlay is
-            // up, pause it so THIS service can record (otherwise the overlay
-            // AudioRecord reads silence and "the mic doesn't function").
-            FritWakeWordService.pauseIfRunning()
+        // The wake-word service holds the microphone. While the overlay is
+        // up, pause it so THIS service can record (otherwise the overlay
+        // AudioRecord reads silence and "the mic doesn't function").
+        try { FritWakeWordService.pauseIfRunning() } catch (e: Exception) { Diag.warn(TAG, "pause_wakeword", e) }
 
-            // Pre-load local model — cached file only. A voice-command session must
-            // never trigger a 0.4–2.5GB download; the model is fetched only from
-            // Settings via ModelDownloadService.
-            scope.launch(Dispatchers.IO) {
+        // Pre-load local model — cached file only. A voice-command session must
+        // never trigger a 0.4–2.5GB download; the model is fetched only from
+        // Settings via ModelDownloadService.
+        scope.launch(Dispatchers.IO) {
+            // F-19 (MEDIUM): this launch had NO try/catch, so a failure in
+            // init/loadModel propagated to the default uncaught-exception
+            // handler and CRASHED the app — while every other init here was
+            // individually guarded.
+            try {
                 com.frit.app.core.LocalInferenceEngine.init(this@FritVoiceOverlayService)
                 com.frit.app.core.llm.LocalLLMEngine.loadModel(
                     this@FritVoiceOverlayService,
                     allowDownload = false,
                 )
-            }
-
-            // Set base URL for network clients
-            NetworkClient.setBaseUrl(baseUrl.value)
-            SubAgentOrchestrator.setBaseUrl(baseUrl.value)
-            VoiceEngine.setBaseUrl(baseUrl.value)
-            MarketAnalysisEngine.setBaseUrl(baseUrl.value)
-        } catch (e: Exception) {
-            Log.e(TAG, "Initialization error", e)
+            } catch (e: Exception) { Diag.warn(TAG, "local_model_preload", e) }
         }
+
+        // Set base URL for network clients — guarded individually so one
+        // failure cannot leave the overlay on the wrong backend.
+        try { NetworkClient.setBaseUrl(baseUrl.value) } catch (e: Exception) { Diag.warn(TAG, "set_baseurl_network", e) }
+        try { SubAgentOrchestrator.setBaseUrl(baseUrl.value) } catch (e: Exception) { Diag.warn(TAG, "set_baseurl_subagent", e) }
+        try { VoiceEngine.setBaseUrl(baseUrl.value) } catch (e: Exception) { Diag.warn(TAG, "set_baseurl_voice", e) }
+        try { MarketAnalysisEngine.setBaseUrl(baseUrl.value) } catch (e: Exception) { Diag.warn(TAG, "set_baseurl_market", e) }
 
         // REMOVED: Auto-start Siri mode on service creation
         // We only want to start listening if explicitly requested or via handleNewInput
@@ -301,6 +323,18 @@ class FritVoiceOverlayService : Service() {
         promoteToForeground()
         val initialText = intent?.getStringExtra("initial_text")
         val autoListen = intent?.getBooleanExtra("auto_listen", false) ?: false
+        // F-19 (MEDIUM): a START_STICKY restart delivers a NULL intent. The
+        // old code then auto-started the microphone (initialText == null was
+        // read as "no text to send, so listen"), so after a system kill the
+        // overlay reappeared over whatever app the user was in and opened
+        // the mic with no tap, no wake word and no visible user intent. A
+        // null intent means "the system brought me back" — not "the user
+        // asked to listen" — so stay idle and only restore the foreground
+        // state.
+        if (intent == null) {
+            Log.i(TAG, "service restarted by the system with no intent — staying idle, not auto-listening")
+            return START_STICKY
+        }
         handleNewInput(initialText, autoListen)
         return START_STICKY
     }
@@ -324,7 +358,14 @@ class FritVoiceOverlayService : Service() {
                 startForeground(NOTIF_ID, notif)
             }
         } catch (e: Exception) {
+            // F-19 (MEDIUM): a failed startForeground used to be logged and
+            // ignored, which left the service running as a plain background
+            // service with the microphone open and no notification — an
+            // invisible recorder. stopSelf() so it cannot outlive the
+            // failure.
             Log.e(TAG, "Failed to start foreground service", e)
+            Diag.warn(TAG, "promote_to_foreground", e)
+            try { stopSelf() } catch (_: Exception) { }
         }
     }
 
@@ -347,8 +388,7 @@ class FritVoiceOverlayService : Service() {
     override fun onDestroy() {
         isRunning = false
         instanceRef = null
-        chatTaskJob?.cancel()
-        chatTaskJob = null
+        cancelChatTasks()
         scope.cancel()
         overlayView?.let {
             try { windowManager?.removeView(it) } catch (e: Exception) { Log.e(TAG, "Error removing overlay view", e) }
@@ -512,10 +552,17 @@ class FritVoiceOverlayService : Service() {
     private suspend fun sendMessage(text: String) {
         if (text.isBlank() && pendingImageContent.value == null) return
         // Track the cloud task so overlay close/cancel aborts it mid-flight.
-        chatTaskJob = kotlin.coroutines.coroutineContext[kotlinx.coroutines.Job]
+        // F-19: register in the SET of live jobs (not a single slot) so a
+        // second in-flight send cannot make the first one uncancellable.
+        val myJob = kotlin.coroutines.coroutineContext[kotlinx.coroutines.Job]
+        if (myJob != null) chatTaskJobs.add(myJob)
 
         val imageToSend = pendingImageContent.value
-        pendingImageContent.value = null
+        // F-19 (MEDIUM): the pending image was cleared BEFORE the request ran,
+        // so a failed turn silently lost it — the strip disappeared and the
+        // user could not re-send or edit it. Clear it only on success; on
+        // failure it stays in the composer.
+        var sentOk = false
 
         // Fold quoted context into what the brain receives; the stored message
         // keeps clean text + structured quotes for rendering/reload.
@@ -545,17 +592,24 @@ class FritVoiceOverlayService : Service() {
         val reply = try {
             withContext(Dispatchers.IO) {
                 IntegrationCoordinator.process(quotePrefix + text, ChatSession.compactHistory(), imageToSend)
-            }
+            }.also { sentOk = true }
         } catch (e: kotlinx.coroutines.CancellationException) {
             // Overlay closed mid-task — stop silently, keep the sent message.
             replyAnimating.value = false
             thinkJob.cancel()
             throw e
-        } catch (e: Exception) { 
+        } catch (e: Exception) {
             Log.e(TAG, "Chat error", e)
-            "Error: ${e.message}" 
+            Diag.warn(TAG, "chat_error", e)
+            "Error: ${e.message}"
         } finally {
-            chatTaskJob = null
+            // Remove ONLY this task. Clearing the whole set here is what made
+            // a concurrent send uncancellable (F-19).
+            if (myJob != null) chatTaskJobs.remove(myJob)
+            // F-19 (MEDIUM): clear the pending image only once the turn
+            // actually succeeded. On failure it stays in the composer so the
+            // user can retry instead of silently losing it.
+            if (sentOk && imageToSend != null) pendingImageContent.value = null
         }
 
         thinkJob.cancel()
@@ -631,9 +685,25 @@ class FritVoiceOverlayService : Service() {
     }
 
     private var isStartingRecording = false
-    // Active cloud task for this overlay session — cancelled on close so no
+    // Active cloud tasks for this overlay session — cancelled on close so no
     // orphan agent keeps driving the phone after the UI is gone.
-    private var chatTaskJob: kotlinx.coroutines.Job? = null
+    //
+    // F-19 (HIGH): this used to be a SINGLE `chatTaskJob` slot. A second
+    // in-flight send overwrote the first job, and the `finally` block cleared
+    // the slot UNCONDITIONALLY — so the still-running job became untracked.
+    // "Stop", "close overlay" and the stranger-pickup pause all cancelled
+    // nothing, and an agent that can drive the phone and place trades kept
+    // running after the user cancelled it. A SET of live jobs means every
+    // in-flight task is cancellable, and a finished task only removes itself.
+    private val chatTaskJobs = java.util.Collections.synchronizedSet(mutableSetOf<kotlinx.coroutines.Job>())
+
+    /** Cancel every in-flight cloud task. Safe to call from any thread. */
+    private fun cancelChatTasks() {
+        val jobs = synchronized(chatTaskJobs) { chatTaskJobs.toList() }
+        jobs.forEach { try { it.cancel() } catch (_: Exception) { } }
+        synchronized(chatTaskJobs) { chatTaskJobs.clear() }
+    }
+
     private var consecutiveVoiceErrors = 0
     private val MAX_VOICE_ERRORS = 3
 
@@ -670,6 +740,17 @@ class FritVoiceOverlayService : Service() {
                     if (!isRunning) return
                     if (VoiceEngine.isMeaningfulTranscript(text)) {
                         fritMode.value = FritMode.THINKING
+                        // F-19 (MEDIUM): `scope.launch` on an already-cancelled
+                        // scope does NOT throw — the body simply never runs,
+                        // so a transcript that arrived while the service was
+                        // being torn down was silently dropped. Log it, and
+                        // keep the text in the chat so it is not lost.
+                        if (!scope.isActive) {
+                            Log.w(TAG, "transcript arrived after the service started dying — keeping it in the chat")
+                            Diag.warn(TAG, "transcript_after_teardown", null)
+                            runCatching { ChatSession.addUser(text, null, emptyList()) }
+                            return
+                        }
                         scope.launch { sendMessage(text) }
                     } else {
                         if (fritMode.value == FritMode.LISTENING && !isListeningPaused.value) {
@@ -709,6 +790,10 @@ class FritVoiceOverlayService : Service() {
     fun startQuickRecording() {
         isQuickRecording.value = true
         // No haptic feedback in service directly, needs to be from UI if desired
+        // F-19 (MEDIUM): the Siri path wrapped startRecording in try/catch but
+        // these two did not, so a mic-unavailable / AudioRecord failure
+        // propagated into the Compose click handler and CRASHED the app.
+        try {
         VoiceEngine.startRecording(object : VoiceEngine.VoiceListener {
             override fun onReady() {}
             override fun onResult(text: String) {
@@ -717,12 +802,19 @@ class FritVoiceOverlayService : Service() {
             }
             override fun onError(e: String) { isQuickRecording.value = false }
         })
+        } catch (e: Exception) {
+            isQuickRecording.value = false
+            Log.e(TAG, "quick recording failed to start", e)
+            Diag.warn(TAG, "quick_recording_start", e)
+            android.widget.Toast.makeText(this@FritVoiceOverlayService, "Could not start recording: ${e.message}", android.widget.Toast.LENGTH_SHORT).show()
+        }
     }
 
     fun startDictation() {
         isQuickRecording.value = true
         dictateToInput.value = true
         // No haptic feedback in service directly, needs to be from UI if desired
+        try {
         VoiceEngine.startRecording(object : VoiceEngine.VoiceListener {
             override fun onReady() {}
             override fun onResult(text: String) {
@@ -741,14 +833,20 @@ class FritVoiceOverlayService : Service() {
                 android.widget.Toast.makeText(this@FritVoiceOverlayService, "Voice error: $e", android.widget.Toast.LENGTH_SHORT).show()
             }
         })
+        } catch (e: Exception) {
+            isQuickRecording.value = false
+            dictateToInput.value = false
+            Log.e(TAG, "dictation failed to start", e)
+            Diag.warn(TAG, "dictation_start", e)
+            android.widget.Toast.makeText(this@FritVoiceOverlayService, "Could not start dictation: ${e.message}", android.widget.Toast.LENGTH_SHORT).show()
+        }
     }
 
     fun cancelListening() {
         fritMode.value = FritMode.IDLE
-        // Closing/cancelling the overlay must kill its cloud work too —
+        // Closing/cancelling the overlay must kill its cloud work too —"
         // otherwise the agent keeps driving the phone after the UI is gone.
-        chatTaskJob?.cancel()
-        chatTaskJob = null
+        cancelChatTasks()
         VoiceEngine.stopRecording()
         VoiceEngine.stopSpeaking()
         // Optionally stop the service if Siri mode is explicitly cancelled
@@ -757,8 +855,7 @@ class FritVoiceOverlayService : Service() {
 
     /** Stop-button (send morphs to stop while generating — same UX as main chat). */
     fun stopOverlayChat() {
-        chatTaskJob?.cancel()
-        chatTaskJob = null
+        cancelChatTasks()
         replyAnimating.value = false
         VoiceEngine.stopRecording()
         VoiceEngine.stopSpeaking()
@@ -804,7 +901,7 @@ class FritVoiceOverlayService : Service() {
                 .border(0.5.dp, stroke.copy(alpha = 0.6f), RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp))
         ) {
             // Theme contour-line art behind the panel — same asset as full chat.
-            com.frit.app.TopoBackground(isDark = isDark, modifier = Modifier.matchParentSize())
+            com.frit.app.ui.TopoBackground(isDark = isDark, modifier = Modifier.matchParentSize())
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -863,12 +960,18 @@ class FritVoiceOverlayService : Service() {
         // Background-task banner (overlay parity with main chat): the reply
         // animation is done but automation may still run underneath.
         val bgTasks = remember { mutableStateListOf<String>() }
+        // F-19 (HIGH): "End all" used to call AutomationScheduler.cancelAll(),
+        // which cancels the running jobs AND permanently deletes every saved
+        // schedule (including recurring jobs set for tomorrow). One tap in a
+        // floating overlay destroyed the user's whole automation config, with
+        // no warning and no undo. The action is now explicit and confirmed.
+        var confirmEndAll by remember { mutableStateOf(false) }
         LaunchedEffect(Unit) {
             while (true) {
                 try {
                     bgTasks.clear()
                     bgTasks.addAll(com.frit.app.features.automation.AutomationScheduler.listActiveTasks())
-                } catch (_: Exception) {}
+                } catch (e: Exception) { Diag.warn("VoiceOverlay", "bg_task_poll", e) }
                 delay(5000)
             }
         }
@@ -885,19 +988,58 @@ class FritVoiceOverlayService : Service() {
                     "⚙️ ${bgTasks.size} background action(s) still running",
                     color = bg, fontSize = 13.sp, modifier = Modifier.weight(1f)
                 )
-                TextButton(onClick = {
-                    com.frit.app.features.automation.AutomationScheduler.cancelAll()
-                    bgTasks.clear()
-                }) { Text("End all", color = Color(0xFFFF8A80)) }
+                TextButton(onClick = { confirmEndAll = true }) { Text("End all", color = Color(0xFFFF8A80)) }
             }
+        }
+
+        if (confirmEndAll) {
+            AlertDialog(
+                onDismissRequest = { confirmEndAll = false },
+                title = { Text("Stop and delete all tasks?", color = fg) },
+                text = {
+                    Text(
+                        "This stops the ${bgTasks.size} background action(s) running right now AND " +
+                            "permanently deletes your saved schedule — including recurring jobs set for later. " +
+                            "It cannot be undone.",
+                        color = fg
+                    )
+                },
+                confirmButton = {
+                    Button(onClick = {
+                        com.frit.app.features.automation.AutomationScheduler.cancelAll()
+                        bgTasks.clear()
+                        confirmEndAll = false
+                    }) { Text("Stop and delete", color = Color(0xFFFF8A80)) }
+                },
+                dismissButton = {
+                    TextButton(onClick = { confirmEndAll = false }) { Text("Keep them", color = fg) }
+                },
+                containerColor = bg,
+            )
         }
 
         pendingImage?.let { b64 ->
             val bitmap = remember(b64) {
                 try {
                     val bytes = Base64.decode(b64, Base64.DEFAULT)
-                    android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                } catch (e: Exception) { null }
+                    // F-19 (MEDIUM): this decoded the FULL-RESOLUTION photo
+                    // (~48 MB of ARGB for a 12 MP image) just to draw a 36 dp
+                    // thumbnail, and kept it alive for the life of the
+                    // composition — a reliable OOM on a mid-range device.
+                    // Decode downsampled to the thumbnail size instead.
+                    val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+                    var sample = 1
+                    val targetPx = 128
+                    while (bounds.outWidth / sample > targetPx || bounds.outHeight / sample > targetPx) {
+                        sample *= 2
+                    }
+                    val opts = android.graphics.BitmapFactory.Options().apply { inSampleSize = sample }
+                    android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
+                } catch (e: Exception) {
+                    Diag.warn(TAG, "pending_image_decode", e)
+                    null
+                }
             }
             Row(
                 Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 6.dp),
@@ -1074,16 +1216,9 @@ private fun isSimpleAutomationIntent(text: String): Boolean {
            t.startsWith("play ") || t.startsWith("listen to ")
 }
 
-fun normalizeAssistantReplyForUi(reply: String): String {
-    if (reply.contains("assistant_text")) {
-        try {
-            val json = JSONObject(reply)
-            return json.optString("assistant_text", reply)
-        } catch (e: Exception) {}
-    }
-    return reply
-}
-
+// F-14: the overlay used to keep its OWN private copy of this function, so
+// the overlay could parse a different envelope shape than the chat UI. It now
+// uses the one shared implementation.
 }
 
 

@@ -638,6 +638,36 @@ object NetworkClient {
             if (font != null) put("font", font)
         }.toString())
 
+    /**
+     * Design Agent (Week 6): research visual references -> one detailed brief
+     * (layout, alignment, palette, fonts/sizes, elements, background) -> render
+     * -> verify the render against the brief. Long-running (10-90s), which the
+     * shared 150s read timeout covers. Returns the whole trail, not just an image.
+     */
+    suspend fun designAgent(
+        goal: String,
+        headline: String? = null,
+        body: String? = null,
+        cta: String? = null,
+        palette: String? = null,
+        brandkitId: String? = null,
+        aspectRatio: String? = null,
+        font: String? = null,
+        inspiration: Boolean = true,
+        verify: Boolean = true,
+    ): String = post("/creative-suite/design/agent", JSONObject().apply {
+        put("goal", goal)
+        if (headline != null) put("headline", headline)
+        if (body != null) put("body", body)
+        if (cta != null) put("cta", cta)
+        if (palette != null) put("palette", palette)
+        if (brandkitId != null) put("brandkit_id", brandkitId)
+        if (aspectRatio != null) put("aspect_ratio", aspectRatio)
+        if (font != null) put("font", font)
+        put("inspiration", inspiration)
+        put("verify", verify)
+    }.toString())
+
     suspend fun editVideoOps(video: String?, audio: String?, subtitles: JSONArray?, clips: JSONArray?, operations: JSONArray): String =
         post("/creative-suite/videos/edit", JSONObject().apply {
             if (video != null) put("video", video)

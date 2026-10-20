@@ -178,6 +178,43 @@ elif [ "$ERRS" -ge 1 ]; then say "  (provider unavailable — error frame: $(gre
 else bad "stream produced no done frame: $(head -c 240 "$SSE")"; fi
 rm -f "$SSE" /tmp/w6_sse_err.$$
 
+# ------------------------------------------- live design agent (opt-in) ----
+# Paid + slow (search -> vision reads -> brief -> render -> verify), so it is
+# opt-in: W6_LIVE_AGENT=1 bash scripts/w6_debug.sh
+if [ "${W6_LIVE_AGENT:-0}" = "1" ]; then
+  say "== design agent (live, one paid image) =="
+  # The agent is an image feature (paid plan). Grant the throwaway user an owner
+  # subscription in the THROWAWAY db so the live check exercises the pipeline
+  # instead of the paywall. Nothing here touches server/frit.db.
+  node -e '
+    const D=require("better-sqlite3");
+    const db=new D(process.argv[1]);
+    db.prepare("INSERT INTO subscriptions (user_id, tier, status, expires_at) VALUES (?, \u0027owner\u0027, \u0027active\u0027, \u00272099-01-01\u0027) ON CONFLICT(user_id) DO UPDATE SET tier=\u0027owner\u0027, status=\u0027active\u0027").run(process.argv[2]);
+    db.close();' "$DB" "app_deadbeef0001" || say "  note: could not grant test tier"
+  T4=$(date +%s%N)
+  ACODE=$(curl -sS -m 170 -o /tmp/w6_agent.$$ -w '%{http_code}' -X POST "$BASE/creative-suite/design/agent" \
+    -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
+    -d '{"goal":"Instagram flyer for a Lagos coffee shop launching cold brew, warm and premium","headline":"COLD BREW","cta":"Order now","aspect_ratio":"4:5","max_refs":2,"maxAttempts":2}' || echo 000)
+  T5=$(date +%s%N); AGENT_MS=$(( (T5-T4)/1000000 ))
+  say "  agent: HTTP $ACODE in ${AGENT_MS}ms"
+  node -e '
+    let s=""; process.stdin.on("data",d=>s+=d).on("end",()=>{
+      let j={}; try { j=JSON.parse(s) } catch (e) { console.log("  unparsable: "+s.slice(0,200)); process.exit(1) }
+      if (!j.ok) { console.log("  FAIL body: "+s.slice(0,400)); process.exit(1) }
+      const b=j.brief||{}, v=j.verification||{};
+      console.log("  refs read: "+((j.inspiration||{}).read||0)+"/"+(((j.inspiration||{}).refs||[]).length)+"  attempts: "+j.attempts);
+      console.log("  palette: "+((b.palette||[]).map(p=>p.hex+" "+p.share_pct+"%").join(", ")));
+      console.log("  typography: "+((b.typography||[]).map(t=>t.role+" "+t.font+" "+t.size_px+"px").join(" | ")));
+      console.log("  layout: "+[b.layout?.grid,b.layout?.alignment,b.layout?.focal].filter(Boolean).join(" / "));
+      const r=j.render||{}; const img=r.image_url||r.image_b64||"";
+      console.log("  render: "+(r.model_used||"none")+" "+(img?"[image] "+img.slice(0,60):"NO IMAGE"));
+      console.log("  review: "+(v.checked?((v.pass?"PASS ":"FAIL ")+(Math.round((v.score||0)*100))+"% "+(v.issues||[]).join("; ")):"not run"));
+      const ok = !!(b.copy && b.copy.headline) && !!j.render && (j.render.image_url || j.render.image_b64);
+      process.exit(ok?0:1);
+    });' < /tmp/w6_agent.$$ && ok "agent returned a brief + render" || bad "agent did not return a usable brief + render"
+  rm -f /tmp/w6_agent.$$
+fi
+
 # ------------------------------------------------- DB shape / migrations ----
 say "== db tables =="
 TABLES=$(node -e '

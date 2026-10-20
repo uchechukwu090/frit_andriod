@@ -98,7 +98,7 @@ fun FritVoiceUI(
         contentAlignment = Alignment.Center
     ) {
         // Render theme background abstract lines
-        com.frit.app.TopoBackground(isDark = isDark)
+        TopoBackground(isDark = isDark)
 
         // FRIT wordmark header (theme-aware logo, same proportions either way)
         FritWordmark(

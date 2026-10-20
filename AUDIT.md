@@ -430,20 +430,20 @@ measures the Phase-6 performance targets. Two real bugs fell out of it; both are
   1. `boundedFetch()` (index.js:72) — every market-data/weather call now carries
      `AbortSignal.timeout(15s)`.
   2. New pure `server/src/concurrency.js` — `runBounded()` with concurrency 3, **12s per symbol**
-     and a **20s total budget**; the scan route (index.js ~7337) always answers. The response now
+     and a **20s total budget**; the scan route (index.js:7338) always answers. The response now
      carries `partial: true` plus `missed: [{symbol, reason}]` so an incomplete scan is visible
      instead of silently looking like the whole list. **6 unit tests** (`test/concurrency.test.mjs`).
   Scan of 20 pairs after the fix: **853–1843ms** with 0 failures in the sweep.
 - **F-46 ✅ DONE (2026-10-20) — deleting a Creative project returned HTTP 500.**
-  `DELETE /creative-suite/projects/:id` (index.js:5978) removed `creative_assets` and then the
+  `DELETE /creative-suite/projects/:id` (index.js:5979) removed `creative_assets` and then the
   project, but `creative_sync_state` and `creative_collaborators` carry a
-  `FOREIGN KEY(project_id) REFERENCES creative_projects(id)` (index.js ~348/356). Any project that
+  `FOREIGN KEY(project_id) REFERENCES creative_projects(id)` (index.js:349/357). Any project that
   had ever been **synced** (the app syncs on open/edit) or shared therefore failed with
   `FOREIGN KEY constraint failed` — i.e. it could not be deleted at all. Fixed with a child-first
   `db.transaction` (assets → collaborators → sync state → project) plus a real 500 body. Verified
   live in the sweep: create → sync → add collaborator → delete = 200.
 - **F-47 🟠 NEW (recorded 2026-10-20) — cold start can block on the remote backup restore.**
-  `restoreFromBackup()` (index.js:101) is a top-level `await` (index.js:120) that runs **before**
+  `restoreFromBackup()` (index.js:102) is a top-level `await` (index.js:121) that runs **before**
   `app.listen`. With Supabase configured and a missing DB file, boot waits for bucket-create +
   a 60s object GET while nothing serves `/health` — a slow/half-down Supabase can make a cold
   deploy fail its health check and restart-loop. The restore logic itself is correct (only when
@@ -455,11 +455,46 @@ measures the Phase-6 performance targets. Two real bugs fell out of it; both are
   another cold DB — the whole difference was the restore, and none of it serves traffic.
 - **F-48 🟡 NEW (recorded 2026-10-20) — the trading suite is half-gated.**
   `POST /api/trading/watchlist` is behind `requireBotAccess` → `checkEntitlement(uid,"trading")`
-  (index.js:7226/7263) and `free` only includes `chat`+`market_data`, so a fresh install gets
+  (index.js:7227/7264) and `free` only includes `chat`+`market_data`, so a fresh install gets
   **402** adding a pair. Meanwhile `POST /api/trading/scan` (the expensive one — 20 symbols and
   upstream market data), the signal history, portfolio and risk reads are **not gated at all**.
   So the paid feature's cheapest write is locked while its most expensive read is free. Product
   decision needed (gate scan too, or ungate watchlist-add); recorded, deliberately not changed.
+- **F-49 ✅ DONE (2026-10-20) — the Design Studio's graphics model was retired upstream.**
+  The default `OR_DESIGN_MODEL` was `inclusionai/ming-image-0.1-design`, and OpenRouter's
+  `/images` catalogue (61 models, checked live) no longer serves it: every Design Studio job
+  burned a failed call before falling back, and the new agent (which used one model) failed
+  outright with `No endpoint found for model "inclusionai/ming-image-0.1-design"`. Fixed:
+  the default is now `bytedance-seed/seedream-5-0-flash` (served), and the agent walks a
+  **model chain** (graphics → image) so a retired slug can never kill a finished brief again.
+  Ops note: any deployment still overriding `OR_DESIGN_MODEL`/`OR_GRAPHICS_MODEL` via env or
+  the Creator console should be re-pointed at a served slug.
+- **Design Agent — NEW FEATURE (2026-10-20).** The Design Studio was one shot; it is now a
+  three-stage agent, exactly as requested: **(1) research** the web for visual references,
+  **(2) turn them into one detailed brief** (canvas, grid + alignment, 60-30-10 palette with
+  hexes, per-role typography with real font/size/weight/tracking/case, elements with placement,
+  imagery, background, exact copy), **(3) render, then verify the render against the brief** and
+  retry once with the reviewer's own complaints as corrections.
+  - New `server/src/creative/designAgent.js` (~600 lines, fully dependency-injected) +
+    `POST /creative-suite/design/agent` (requireAuth, limitCostly, image entitlement, billed
+    once per DELIVERED design, never on failure; job row in `creative_jobs`, kind
+    `design_agent`). Catalog updated.
+  - Research is keyless and degrades gracefully: Bing image search → Openverse API fallback,
+    with URL ranking that drops avatars/icons/SVGs and prefers Pinterest/Behance/Dribbble.
+    References are read by the vision model and reduced to transferable design DNA.
+  - **22 unit tests** (`test/designAgent.test.mjs`): query planning, HTML URL extraction,
+    ranking, hex/brief normalisation (user copy wins, sizes/weights clamped, shares normalised),
+    prompt assembly, verification judgement, vision-JSON retry, orchestrator success /
+    inspiration-failure / verify-fail-retry / verify-off / no-generator paths.
+  - **Live run (paid, throwaway DB): 2 references read → brief (copy, palette, type, layout) →
+    render on Seedream → review 0.82 PASS** with 5 concrete issues in 49s end-to-end.
+  - Two real defects were found while proving it, both fixed: a bare `image_b64` was passed to
+    the vision model as-is (it replied "no render was provided" — now normalised to a data URI
+    and downscaled to 1024px JPEG), and a prose (non-JSON) reviewer/brief reply silently
+    produced defaults (now retried once with a JSON-only nudge).
+  - Android: `NetworkClient.designAgent(...)` + an **Agent mode** checkbox in
+    `DesignStudioScreen` that shows the brief (layout/palette/typography), the reference count
+    and the review verdict. `:app:compileDebugKotlin` BUILD SUCCESSFUL.
 - **Notes (no code change):** (a) `/api/trading/paper-portfolio` on a fresh DB logs
   `[paper-portfolio] options: no such table: options_paper` once and returns 200 without the
   options section — graceful and self-heals; (b) the chat router is conservative: "hi" streams
@@ -648,6 +683,9 @@ SSE chat), which is where the two real bugs below were hiding.
   synced project impossible to delete; now a child-first transaction. Verified live.
 - **F-08 ✅ server catch sweep closed** — `scripts/js_catch_audit.js`: 49 files, 0 empty catches,
   all 22 non-logging catches reviewed as handled (see §2.1).
+- **Design Agent shipped** — `POST /creative-suite/design/agent` (research → detailed brief →
+  render → verify-with-retry), 22 tests, Android agent mode in the Design Studio. Proving it
+  live also exposed **F-49** (retired graphics model slug), now fixed.
 - **F-47 / F-48 🟠🟡 recorded** — cold-start restore blocks `listen` (up to 80s worst case); the
   trading paywall gates watchlist-add (402) but not the expensive scan endpoint. Both need a
   product/ops decision, so they are documented rather than silently changed.
@@ -701,7 +739,7 @@ SSE chat), which is where the two real bugs below were hiding.
 ```bash
 cd server
 node --check src/index.js          # syntax gate
-npm test                           # expect 142/142 (billing + brand + concurrency + creative + engine + streaming + strategy + strategy_money + subtitles)
+npm test                           # 254/254 at the time of writing (billing, brand, concurrency, creative, designAgent, engine, strategy, strategy_money, streaming, streamRegression, subtitles, strategyMore — other sessions keep adding suites, so the total only goes up)
 echo "EXIT=${PIPESTATUS[0]}"       # real exit code, not the filtered one
 ```
 
@@ -710,6 +748,10 @@ echo "EXIT=${PIPESTATUS[0]}"       # real exit code, not the filtered one
 ```bash
 bash scripts/w6_debug.sh           # boots a throwaway DB, 68 checks, exits non-zero on any 5xx
 node scripts/js_catch_audit.js     # F-08 gate: expect 0 EMPTY, review any SILENT hits
+
+# Design agent (each run spends ONE image generation):
+bash scripts/w6_design_agent_probe.sh      # focused: prints stages, brief, render, review
+W6_LIVE_AGENT=1 bash scripts/w6_debug.sh   # the same check inside the full sweep
 ```
 
 The sweep never touches `server/frit.db` (`DB_PATH` points at /tmp) and cleans up its own file.
