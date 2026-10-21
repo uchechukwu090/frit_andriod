@@ -16,6 +16,7 @@ param(
   [string]$Headline = "HAPPY BIRTHDAY",
   [string]$Cta = "Join the party",
   [int]$MaxRefs = 3,
+  [int]$MaxAttempts = 2,
   [switch]$NoRender,
   [int]$Port = 18844
 )
@@ -36,7 +37,11 @@ $proc = Start-Process -FilePath "node" -ArgumentList "src/index.js" -WorkingDire
   -RedirectStandardOutput $log -RedirectStandardError "$log.err" -PassThru -NoNewWindow
 
 function Cleanup {
-  if ($proc -and -not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
+  if ($proc -and -not $proc.HasExited) {
+    Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Milliseconds 500
+    if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
+  }
   Remove-Item $db, "$db-wal", "$db-shm" -ErrorAction SilentlyContinue
 }
 trap { Cleanup; break }
@@ -55,35 +60,45 @@ try {
     -Body (@{ install_id = $uid } | ConvertTo-Json)).api_key
   if (-not $key) { Write-Host "no api key"; exit 1 }
 
-  # Owner tier so the paywall does not mask the pipeline.
-  # The grant lives in a temp .cjs file: an inline `node -e` script loses its
-  # quotes when PowerShell hands it to the process.
-  $grant = Join-Path $server ("_w7_grant_{0}.cjs" -f $PID)
-  @'
-const D = require("better-sqlite3");
-const db = new D(process.argv[2]);
-db.prepare("INSERT INTO subscriptions (user_id,tier,status,expires_at) VALUES (?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET tier=excluded.tier,status=excluded.status,expires_at=excluded.expires_at")
-  .run(process.argv[3], "owner", "active", "2099-01-01");
-db.close();
-console.log("granted");
-'@ | Set-Content -Path $grant -Encoding ASCII
-  & node $grant $db $uid
-  if ($LASTEXITCODE -ne 0) { Write-Host "tier grant failed"; exit 1 }
-  Remove-Item $grant -ErrorAction SilentlyContinue
+  # Owner tier so the paywall does not mask the pipeline. Redeeming the
+  # MASTER_CODE is the server's own path (POST /billing/redeem) - it needs no
+  # direct DB write, so it cannot race the server's own schema/backup logic.
+  $master = ""
+  $envFile = Join-Path $server ".env"
+  if (Test-Path $envFile) {
+    $line = Get-Content $envFile | Where-Object { $_ -match "^\s*MASTER_CODE\s*=" } | Select-Object -First 1
+    if ($line) { $master = ($line -split "=", 2)[1].Trim().Trim('"').Trim("'") }
+  }
+  if (-not $master) { Write-Host "MASTER_CODE not found in server/.env - cannot grant the tier"; exit 1 }
+  $redeem = Invoke-RestMethod -Method Post -Uri "$base/billing/redeem" -Headers @{ Authorization = "Bearer $key" } `
+    -ContentType "application/json" -Body (@{ code = $master } | ConvertTo-Json)
+  Write-Host ("  tier: {0}" -f $redeem.tier)
 
   $results = @()
   foreach ($run in 1..2) {
     Write-Host "== run $run =="
     $body = @{
       goal = $Goal; headline = $Headline; cta = $Cta
-      aspect_ratio = "4:5"; max_refs = $MaxRefs; maxAttempts = 1
+      aspect_ratio = "4:5"; max_refs = $MaxRefs; maxAttempts = $MaxAttempts
     }
     if ($NoRender) { $body.verify = $false }
     $json = $body | ConvertTo-Json -Compress
     $sw = [Diagnostics.Stopwatch]::StartNew()
-    $r = Invoke-RestMethod -Method Post -Uri "$base/creative-suite/design/agent" `
-      -Headers @{ Authorization = "Bearer $key" } -ContentType "application/json" -Body $json -TimeoutSec 200
+    # curl.exe, not Invoke-RestMethod: a 90s+ request that returns a
+    # multi-megabyte payload loses its keep-alive socket in .NET's HTTP
+    # stack on this host (the server completes it with a 200 every time).
+    # The payload goes through a FILE: passing JSON inline to curl.exe from
+    # PowerShell strips the quotes and the server sees broken JSON.
+    $bodyFile = Join-Path $env:TEMP ("w7_body_{0}.json" -f $PID)
+    $postFile = Join-Path $env:TEMP ("w7_post_{0}.json" -f $PID)
+    Set-Content -Path $postFile -Value $json -Encoding ASCII
+    $code = & curl.exe -sS --max-time 300 -o $bodyFile -w "%{http_code}" -X POST "$base/creative-suite/design/agent" `
+      -H "Authorization: Bearer $key" -H "Content-Type: application/json" --data-binary "@$postFile"
     $sw.Stop()
+    $raw = Get-Content $bodyFile -Raw -ErrorAction SilentlyContinue
+    Remove-Item $bodyFile, $postFile -ErrorAction SilentlyContinue
+    if ($code -ne "200") { Write-Host "  HTTP $code : $($raw.Substring(0, [Math]::Min(300, $raw.Length)))"; exit 1 }
+    $r = $raw | ConvertFrom-Json
 
     $refs = @($r.inspiration.refs)
     $studied = @($r.inspiration.studied)
@@ -124,4 +139,7 @@ finally {
   if (Test-Path $log) { Get-Content $log | Select-String -Pattern "design|agent|Error|error|warn" | Select-Object -Last 25 }
   Cleanup
 }
+
+
+
 

@@ -522,6 +522,61 @@ measures the Phase-6 performance targets. Two real bugs fell out of it; both are
   - Android: `NetworkClient.designAgent(...)` + an **Agent mode** checkbox in
     `DesignStudioScreen` that shows the brief (layout/palette/typography), the reference count
     and the review verdict. `:app:compileDebugKotlin` BUILD SUCCESSFUL.
+- **Creative Agent — Week 7 (2026-10-21): the anti-copy + anti-slop build.** The Week-6 agent
+  could *see* references but it re-used them, and it let the image model paint the type. Five
+  defects, all fixed, all proven live:
+  - **F-50 ✅ the agent re-skinned the reference.** A reference has two halves: **STRUCTURE**
+    (grid, alignment, whitespace, palette temperature, type contrast, motif density, texture) and
+    **CONTENT** (subject, motifs, people). Only structure may cross into the brief; the content
+    always comes from the user. New `server/src/creative/designDNA.js` splits the DNA and
+    `structuralOnly()` is the *only* path into the brief writer — the subject literally never
+    reaches it. 20 unit tests (`test/designDNA.test.mjs`).
+  - **F-51 ✅ the same request browsed the same three images forever.** `planInspirationQueries`
+    produced an identical query string every time and `rankInspirationUrls` had **no diversity
+    logic** (top-3 by a static host score, usually three pins from one board). Now: a **seed**
+    (hash of uid+goal+clock) drives a style token in the query, a jitter that can reorder results
+    *inside* a host tier (never across it), the reference order, and the art direction. References
+    are then chosen by **maximum structural spread** (farthest-point selection over the DNA
+    signature), not by rank. Proven live: two identical requests now return **different
+    references, different art direction, different prompt and a different brief**.
+  - **F-52 ✅ the brief mirrored the reference.** `enforceDivergence()` compares the brief's
+    structural fingerprint with the references and pushes it away (different grid family,
+    alignment, type pairing, and — only when the user did not pin a palette/brand — a different
+    hue band). A brand-pinned palette is never touched.
+  - **F-53 ✅ the design looked like an AI poster because the model painted the type.** Image
+    models mangle letterforms, so the renderer is now asked for a **background plate**
+    ("ARTWORK ONLY … DO NOT RENDER any letters") and the **type layer** sets the real copy:
+    new `server/src/creative/typeLayer.js` turns the brief's typography (font/size/weight/
+    tracking/case) into a typeset block via sharp+SVG, with fit-to-column (a headline is shrunk
+    until it fits, never clipped), a contrast-picked type colour, a contrast-picked CTA badge and
+    a runtime font probe that degrades to artwork-only instead of failing. A typography
+    specialist (Ideogram/Recraft) sets the type itself, so the layer is skipped for them
+    (`isTypeSpecialist`). 14 unit tests (`test/typeLayer.test.mjs`).
+  - **F-54 ✅ "auto-correct" never looked at the result.** The Director's `auto_correct` only
+    retried when the provider *threw*. New `server/src/creative/directorAgent.js` runs the same
+    three stages for motion: look research → shot plan (with a **shot-variety guard** so two
+    shots cannot share a move AND an angle) → per-shot render → **frame extraction**
+    (`POST /media/frames` in the sandbox, ffmpeg) → vision review of the FRAME against the shot
+    → re-render with the reviewer's complaints. 14 unit tests (`test/directorAgent.test.mjs`).
+  - **Also:** Ideogram v3 + Recraft v3 adapters (`server/src/creative/imageProviders.js`) selected
+    **by model slug prefix** (`ideogram/…`, `recraft/…`), so the existing craft routing lights up
+    with no plumbing; Recraft's `texts[]` carries the brief's real type. 10 unit tests.
+    Reference transport (`creative/refs.js`: browser-like fetch → origin-side public proxy
+    fallback → ≤1024px → content-addressed disk cache) with `GET /creative-suite/refs/:id` so the
+    app can SHOW what was studied. 9 unit tests.
+  - **Live verification:** `scripts/w7_agent_probe.ps1` (a PowerShell port of the Week-6 bash
+    probe — WSL bash is not installed on this host) boots a throwaway server, runs the SAME goal
+    twice and fails the run if the two repeat each other. Last run: 2/2 delivered, reviews 0.75
+    and 0.85, references/art direction/prompt/brief all DIFFERENT. Six defects were found and
+    fixed by that probe: the brief stage timing out (it ran on the vision model — now the draft
+    chain), the provider retry loop politely waiting out a 429 and eating the whole stage budget
+    (now `retries: 1` so the chain moves to the next model), a silent empty completion being
+    treated as success, a prose brief reply silently shipping a default brief (now it throws and
+    falls back to the reference DNA), the CTA text being invisible on a dark badge, and poster
+    body copy being set at an unreadable 16px.
+  - **Note:** a previous session had left `creative/refs.js` unreferenced; it is better than the
+    cache module written alongside it (origin-side proxy fallback, disk cache), so the build was
+    consolidated onto it and the duplicate deleted.
 - **Notes (no code change):** (a) `/api/trading/paper-portfolio` on a fresh DB logs
   `[paper-portfolio] options: no such table: options_paper` once and returns 200 without the
   options section — graceful and self-heals; (b) the chat router is conservative: "hi" streams
@@ -598,6 +653,11 @@ deep_search.js; model_config.js), plus `server/test/` and `package.json`. **Do n
 server.** Week 6 added `server/src/concurrency.js` (+6 unit tests) and exercised the routes over
 live HTTP instead of re-reading them — see §2.3d. Corrected inventory note: `rails/` contains ONLY `router.js`; `deriv.js`/`alpaca.js`
 live at `strategy/` root; there is no `signal_store.js` (journal.js covers setup recording).
+**Week 7 added `server/src/creative/designDNA.js`, `imageProviders.js`, `typeLayer.js`,
+`directorAgent.js` (and adopted the pre-existing `creative/refs.js`)** — 67 new unit tests
+(`designDNA`, `typeLayer`, `imageProviders`, `refs`, `directorAgent`) plus 15 added to
+`designAgent.test.mjs`. These are all dependency-injected and hermetic; **do not re-audit them —
+run `npm test` and `scripts/w7_agent_probe.ps1` instead.**
 
 **PARTIALLY READ — finish these (append findings, keep the ledger current):**
 - `android/.../data/NetworkClient.kt` — first ~200 of 793 read (rest = endpoint methods + error map;
@@ -681,11 +741,83 @@ needs it; free-tier sleep fights cold-start UX) — revenue protection for the b
   package-lookup loops, `ALTER TABLE` migration guards, `audioRecord.release()`, `recognizer.destroy()`,
   `resolver.delete()`, TTS setSpeechRate, and every catch around `TokenStore`/`FRIT_AUTH_TOKEN`
   (Constraint #1).
-- **F-43 streaming AI chat ✅ DONE** — see §2.3c. New `POST /agent/chat/stream` (SSE) on the
-  server, `NetworkClient.streamChat` + `data/SseParser.kt` on the phone, and a live
-  provisional bubble in the chat. Two real streaming bugs were found and fixed on the way
-  (`node-fetch` v3's body is a Node stream, not a web ReadableStream; and `req.on("close")`
-  fires as soon as the request body is read, so the abort handler must listen on `res`).
+- **F-44 🟠→✅ DONE (2026-10-20, Week 6 second pass) — the creative suite's EDITOR/MANAGE side
+  was broken: "many of the ui are breaking, not previewing images".** A full read of all 34
+  Kotlin files under `ui/creative/` plus the server's `/creative-suite/*` contract found 15 HIGH
+  and 25 MEDIUM defects. The root causes behind the broken previews:
+  1. **Every preview was a FULL-RESOLUTION decode.** `GeneratedImage` did
+     `BitmapFactory.decodeByteArray(bytes, 0, bytes.size)` on a multi-megabyte `data:` URL with
+     no `inSampleSize` → 16 MB per 2048² image, ~48 MB for a 12 MP photo, 100-400 MB for a grid
+     of 6-8 → OOM → **the preview silently showed nothing**. The editor's bitmap ops and the
+     generative-fill path had the same bug (the latter allocating a SECOND full-size bitmap for
+     the mask). All three now decode through a bounded `decodeBounded()`.
+  2. **org.json's `optString` returns the literal string `"null"` for a JSON null**, and ~20
+     client sites used it where the server sends explicit `null` (`image_url`, `image_b64`,
+     `video_base64`, `result_url`, `thumbnail_url`, `logo_url`). The image source became the
+     string "null" → Coil/decoder failed → blank card, or `data:image/png;base64,null`. All
+     now use the repo's own `strOrNull` (which already existed but was only used in 2 places).
+  3. **A raw base64 blob is not a loadable URL.** The server returns `image_b64` with NO
+     `data:` prefix; Coil cannot load that. New shared `ui/creative/components/CreativeImage.kt`
+     normalises data: URI / raw base64 / http(s) / file: / content: into something loadable,
+     treats "null" as ABSENT, and uses Coil (which downsamples to the layout size) instead of a
+     hand-rolled full-res decode. 8 JVM unit tests (`CreativeImageTest`).
+  4. **The editor's round-trip inflated the image.** `bitmapToDataUrl` re-encoded every edit as
+     LOSSLESS PNG q100 (a 12 MP photo → ~12 MB PNG → ~16 MB of base64) and the undo stack kept
+     every version as a base64 String. Now JPEG q88 at a 2048 px cap, and the undo history is
+     bounded to 8 steps. Imports are downsampled too (a 12 MP photo used to become a 16 MB
+     base64 string in Compose state).
+  5. **The "manage" screens never rendered the image the API already returns** — project
+     thumbnails, character `reference_urls`, brand-kit `logo_url`, template `thumbnail_url`, and
+     the Director's per-shot `url` were all parsed and then ignored, so the library showed grey
+     boxes and generic icons. All are rendered now.
+  Also fixed: `mediaUrlToBytes` fetched http URLs with NO auth header and NO timeout (so every
+  download of an auth-gated media route failed with 401, and a dead host hung the coroutine
+  forever) — it now goes through OkHttp with the bearer token and bounded timeouts; the Director's
+  raw-base64 hand-off (which the next studio could not decode); the project delete that removed
+  the row from the UI even when the server had failed; the zoom/pan state in the image viewer that
+  was not keyed on the image (so a new image opened at the previous zoom — which looks exactly
+  like "the preview did not update"); and the `CreativeProject.thumbnailUrl` that was the literal
+  "null" (the main screen treated it as a URL and opened the editor on it).
+  - **Reference for the next phase:** `T8RIN/ImageToolbox` (Apache-2.0, 15.1k stars) is the
+    reference implementation for the editor's *feature* surface — 500+ filters, filter CHAINS,
+    batch processing, 61 export profiles per platform, format conversion, markup layers, OCR.
+    FRIT does not need to copy it; the useful takeaways are (a) export PROFILES instead of one
+    size per platform, (b) composable filter chains, (c) batch editing. Recorded as the Week 7
+    direction, not done here.
+
+- **F-45 ✅ DONE (2026-10-20) — the SANDBOX DOCKER BUILD was broken.**
+  Render reported: `process "/bin/sh -c apt-get update && apt-get install -y --no-install-recommends
+  python3 python3-pip python3-dev build-essential libta-lib-dev ffmpeg fonts-dejavu-core curl git
+  jq sqlite3 poppler-utils imagemagick && rm -rf /var/lib/apt/lists/*" did not complete
+  successfully: exit code: 100`. apt-get exits 100 when a package cannot be found, and
+  `node:20-slim` now resolves to Debian 13 (trixie) where **libta-lib-dev was REMOVED** — one
+  missing package took the whole image down. The Dockerfile now (1) pins the base to
+  `node:20-slim-bookworm` and (2) splits the list: everything FRIT needs is REQUIRED and the
+  TA-Lib headers are OPTIONAL (the PyPI wheel bundles the compiled library), so one unavailable
+  package can no longer fail the build. The pip step was made resilient the same way — TA-Lib is
+  installed on its own so a TA-Lib failure cannot cost the other 16 packages.
+
+- **F-46 ✅ DONE (2026-10-20) — the AUTH_TOKEN was rotated.** The live token was published in the
+  public `frit-android` repo's history (see the security note above), which the user correctly
+  pointed out cannot simply be changed server-side without breaking installed apps. It CAN be
+  changed safely, because the app bakes the token from `server/.env` at BUILD time
+  (`buildConfigField("String", "FRIT_AUTH_TOKEN", ...)` → `FritConfig.AUTH_TOKEN` →
+  `TokenStore.get().ifBlank { FritConfig.AUTH_TOKEN }`), so:
+  - the NEW token lives in `server/.env` and the NEXT APK build bakes it automatically;
+  - existing installs keep working — they hold their own per-install key from
+    `POST /auth/install`, which the master token does not invalidate;
+  - support can rotate a device without an app update via `TokenStore.set()`.
+  New value: `61c9c581d5870894f548356bd230c681b300399a3fe79ff7` (the old one is in the public
+  repo's history and is dead). `server/rotate_token.cjs` does the swap.
+
+- **F-47 ✅ DONE (2026-10-20) — MISTRAL_API_KEY removed.** It is not used: OpenRouter is the
+  provider. Two code bugs came with it: the fallback chain pushed a Mistral model
+  UNCONDITIONALLY (`if (MISTRAL_MODEL)`, and MISTRAL_MODEL always defaults to
+  "mistral-large-latest"), so with no key the chain ended on a provider that was called as
+  "Bearer undefined" and burned a retry on a guaranteed 401; and `mistralChat` had no key
+  check. Both now fail fast and skip the provider.
+
+- **F-43 ✅ DONE (2026-10-19) — see §2.3c for the streaming AI chat.**
 - **Test-count note (important for whoever runs the suite next):** the unit-test count went
   48 → 136. The old notes that say "expect 39/39" or "23/23" are STALE — the `npm test` glob
   picks up every file in `server/test/`, so adding a suite raises the total. The suites now are:
@@ -857,7 +989,7 @@ the Week 5 second-pass block in §4. Only what is genuinely still open is listed
 ```bash
 cd server
 node --check src/index.js          # syntax gate
-npm test                           # 254/254 at the time of writing (billing, brand, concurrency, creative, designAgent, engine, strategy, strategy_money, streaming, streamRegression, subtitles, strategyMore — other sessions keep adding suites, so the total only goes up)
+npm test                           # 349/349 at the time of writing (billing, brand, concurrency, creative, designAgent, designDNA, directorAgent, imageProviders, refs, typeLayer, engine, strategy, strategy_money, streaming, streamRegression, subtitles, strategyMore — other sessions keep adding suites, so the total only goes up)
 echo "EXIT=${PIPESTATUS[0]}"       # real exit code, not the filtered one
 ```
 
@@ -872,12 +1004,37 @@ bash scripts/w6_design_agent_probe.sh      # focused: prints stages, brief, rend
 W6_LIVE_AGENT=1 bash scripts/w6_debug.sh   # the same check inside the full sweep
 ```
 
+**Week 7 addition — the creative agent probe (PowerShell; WSL bash is NOT installed on this host):**
+
+```powershell
+# Boots a throwaway server, runs the SAME goal twice and FAILS the run if the
+# two repeat each other (same references, same prompt, same brief).
+# Costs two image generations. Reads MASTER_CODE from server/.env to unlock the tier.
+powershell -ExecutionPolicy Bypass -File scripts/w7_agent_probe.ps1
+```
+
+It is the regression gate for the anti-copy rules: if the agent ever goes back to browsing the
+same three images for the same request, this probe fails. The live runs are what found the brief
+timeout, the 429-retry stall, the empty-completion-as-success bug, the invisible CTA badge and
+the unreadable body copy — none of them were visible in the unit tests.
+
+Two host-specific traps in that script, both learned the hard way:
+- **`.ps1` must be ASCII-only.** PowerShell 5.1 reads the file as ANSI; one em-dash breaks the
+  parse with a confusing "Unexpected token" error.
+- **The long request must go through `curl.exe`, not `Invoke-RestMethod`.** A 90s+ request that
+  returns a multi-megabyte payload loses its keep-alive socket in .NET's HTTP stack on this host
+  ("A connection that was expected to be kept alive was closed by the server") even though the
+  server completed it with a 200. The JSON payload must also go through a file
+  (`--data-binary @file`): passing it inline to `curl.exe` from PowerShell strips the quotes and
+  the server sees broken JSON.
+
 The sweep never touches `server/frit.db` (`DB_PATH` points at /tmp) and cleans up its own file.
 It also prints the Phase-6 performance line (boot / scan-20 / portfolio / feed-status / health).
 
 Windows host note: `node --test test/` (directory form) errors here — always use the glob form
 already in the `npm test` script. Live-provider behavior (billing, webhooks) can't be verified on
-this host — staging required.
+this host — staging required. The `w7_agent_probe.ps1` file must stay **ASCII-only**: PowerShell
+5.1 reads `.ps1` as ANSI, and a single em-dash in it breaks the parse.
 
 ### 5b. VERIFICATION RECIPE (for whoever changes Android code) — NEW in Week 5
 

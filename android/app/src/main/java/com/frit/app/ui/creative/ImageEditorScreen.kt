@@ -57,10 +57,49 @@ private fun editorUrlToBytes(url: String): ByteArray? = try {
     } else null
 } catch (_: Exception) { null }
 
+/**
+ * F-13 follow-up: the editor re-encoded every edit as LOSSLESS PNG q100.
+ * A 12 MP camera photo became a ~12 MB PNG, which is ~16 MB of base64 — and
+ * that string was then the body of the next request AND the next undo entry.
+ * After one or two edits the working image was tens of megabytes and the
+ * next decode / POST / save died. JPEG q88 at a bounded size is what a photo
+ * editor actually wants, and it is ~10x smaller.
+ */
+private const val EDIT_MAX_EDGE = 2048
+private const val EDIT_JPEG_QUALITY = 88
+
 private fun bitmapToDataUrl(bmp: Bitmap): String {
+    // Cap the long edge so a huge source cannot produce a 16 MB payload.
+    val scale = minOf(
+        1f,
+        EDIT_MAX_EDGE.toFloat() / maxOf(bmp.width, bmp.height)
+    )
+    val outBmp = if (scale < 1f) {
+        Bitmap.createScaledBitmap(bmp, (bmp.width * scale).toInt().coerceAtLeast(1), (bmp.height * scale).toInt().coerceAtLeast(1), true)
+    } else bmp
     val out = ByteArrayOutputStream()
-    bmp.compress(Bitmap.CompressFormat.PNG, 100, out)
-    return "data:image/png;base64," + Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
+    outBmp.compress(Bitmap.CompressFormat.JPEG, EDIT_JPEG_QUALITY, out)
+    if (outBmp !== bmp) outBmp.recycle()
+    return "data:image/jpeg;base64," + Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
+}
+
+/**
+ * Decode an image, downsampled to at most [maxEdge] on the long edge.
+ *
+ * F-13 follow-up: the editor decoded at FULL resolution
+ * (`BitmapFactory.decodeByteArray(bytes, 0, bytes.size)`), so a 12 MP photo
+ * was a ~48 MB ARGB_8888 bitmap — and the generative-fill path allocated a
+ * SECOND full-size bitmap for the mask on top of it. That is an OOM on a
+ * mid-range phone, and the symptom was "the editor does nothing".
+ */
+private fun decodeBounded(bytes: ByteArray, maxEdge: Int = EDIT_MAX_EDGE): Bitmap? {
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+    var sample = 1
+    while (bounds.outWidth / sample > maxEdge || bounds.outHeight / sample > maxEdge) sample *= 2
+    val opts = BitmapFactory.Options().apply { inSampleSize = sample }
+    return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
 }
 
 @Composable
@@ -94,6 +133,9 @@ fun ImageEditorScreen(
     var maskCanvasSize by remember { mutableStateOf(IntSize.Zero) }
     val undoStack = remember { mutableStateListOf<String>() }
     val redoStack = remember { mutableStateListOf<String>() }
+    // F-13 follow-up: undo/redo entries are whole base64 images, so the
+    // history has to be bounded or a few edits eat tens of megabytes.
+    val MAX_UNDO_STEPS = 8
 
     // Pick up media pushed from any other studio.
     LaunchedEffect(Unit) {
@@ -118,7 +160,14 @@ fun ImageEditorScreen(
     }
 
     fun pushUndo() {
-        if (currentImageUrl.isNotBlank()) undoStack.add(currentImageUrl)
+        if (currentImageUrl.isNotBlank()) {
+            undoStack.add(currentImageUrl)
+            // F-13 follow-up: each undo entry is a WHOLE base64 image (a
+            // 2048px JPEG is ~1 MB of base64). An unbounded stack meant 10
+            // edits = 10+ MB of live Strings on a phone. Keep the history
+            // useful but bounded.
+            while (undoStack.size > MAX_UNDO_STEPS) undoStack.removeAt(0)
+        }
         redoStack.clear()
     }
 
@@ -150,7 +199,7 @@ fun ImageEditorScreen(
                 val b64 = "data:image/png;base64," + Base64.encodeToString(bytes, Base64.NO_WRAP)
                 val r = JSONObject(NetworkClient.editCreativeImage(b64, ops))
                 val out = r.optString("result").takeIf { it.isNotBlank() }
-                    ?: r.optString("result_url").takeIf { it.isNotBlank() }
+                    ?: r.strOrNull("result_url")
                 if (!r.optBoolean("ok") || out == null) throw Exception(r.optString("error", "edit failed"))
                 pushUndo()
                 currentImageUrl = out
@@ -169,7 +218,7 @@ fun ImageEditorScreen(
             toolStatus = ""
             try {
                 val bytes = editorUrlToBytes(currentImageUrl) ?: throw Exception("load an image first")
-                val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: throw Exception("could not decode image")
+                val bmp = decodeBounded(bytes) ?: throw Exception("could not decode image")
                 val out = transform(bmp)
                 if (out != bmp) bmp.recycle()
                 pushUndo()
@@ -213,9 +262,9 @@ fun ImageEditorScreen(
             toolStatus = r.optString("error", "AI tool failed")
             return false
         }
-        val out = r.optString("image_url").takeIf { it.isNotBlank() }
-            ?: r.optString("image_b64").takeIf { it.isNotBlank() }?.let { "data:image/png;base64,$it" }
-            ?: r.optString("result").takeIf { it.isNotBlank() }
+        val out = r.strOrNull("image_url")
+            ?: r.strOrNull("image_b64")?.let { normalizeMediaUrl(it) }
+            ?: r.strOrNull("result")
         if (out == null) {
             toolStatus = "AI tool returned no image"
             return false
@@ -601,7 +650,7 @@ fun ImageEditorScreen(
                                         try {
                                             val imgBytes = editorUrlToBytes(currentImageUrl)
                                                 ?: throw Exception("load an image first")
-                                            val bmp = BitmapFactory.decodeByteArray(imgBytes, 0, imgBytes.size)
+                                            val bmp = decodeBounded(imgBytes)
                                                 ?: throw Exception("could not decode image")
                                             val path = maskPath ?: throw Exception("draw a mask area first")
                                             val cs = maskCanvasSize

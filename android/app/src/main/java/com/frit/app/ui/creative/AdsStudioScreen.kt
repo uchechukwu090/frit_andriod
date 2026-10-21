@@ -20,6 +20,7 @@ import com.frit.app.ui.creative.components.HandoffRow
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import org.json.JSONObject
+import com.frit.app.ui.creative.components.normalizeMediaUrl
 
 private data class AdShot(val kind: String, val prompt: String, val duration: Int, var imageUrl: String? = null, var videoPath: String? = null)
 
@@ -110,8 +111,8 @@ fun AdsStudioScreen(
                                 plan?.optString("cta")?.let { "CTA: $it" } ?: ""
                             ).filter { it.isNotBlank() }.joinToString("\n\n").ifBlank { r.toString().take(600) }
                             posterUrl = r.optJSONObject("poster")?.let { p ->
-                                p.optString("image_url").ifBlank { null }
-                                    ?: p.optString("image_b64").ifBlank { null }?.let { "data:image/png;base64,$it" }
+                                p.strOrNull("image_url")
+                                    ?: p.strOrNull("image_b64")?.let { normalizeMediaUrl(it) }
                             }
                             val arr = plan?.optJSONArray("shots")
                             shots = if (arr != null) (0 until arr.length()).map { i ->

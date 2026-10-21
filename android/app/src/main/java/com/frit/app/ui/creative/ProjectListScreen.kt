@@ -24,6 +24,7 @@ fun ProjectListScreen(
 ) {
     var projects by remember { mutableStateOf<List<CreativeProject>>(emptyList()) }
     var isLoading by remember { mutableStateOf(true) }
+    var error by remember { mutableStateOf("") }
     var showNewProjectDialog by remember { mutableStateOf(false) }
     var newProjectName by remember { mutableStateOf("") }
     var newProjectType by remember { mutableStateOf("image") }
@@ -57,7 +58,17 @@ fun ProjectListScreen(
             }
         }
     ) { padding ->
-        if (isLoading) {
+        if (error.isNotBlank()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(padding)
+                    .padding(16.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(error, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
+            }
+        } else if (isLoading) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -99,16 +110,32 @@ fun ProjectListScreen(
                                 .padding(16.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
+                            // F-13 follow-up: the project API already returns a
+                            // thumbnail (and the assets carry their own image),
+                            // but this row drew a generic icon instead — the
+                            // library showed NO pictures at all. Render the real
+                            // thumbnail, falling back to the first image asset.
+                            val projectImage = project.thumbnailUrl
+                                ?: project.assets.firstOrNull { it.kind == "image" }?.currentUrl
                             Surface(
                                 modifier = Modifier.size(48.dp),
                                 shape = MaterialTheme.shapes.small,
                                 color = MaterialTheme.colorScheme.surfaceVariant
                             ) {
-                                Box(contentAlignment = Alignment.Center) {
-                                    Icon(
-                                        if (project.type == "video") Icons.Default.Videocam else Icons.Default.Image,
-                                        contentDescription = null
+                                if (projectImage != null) {
+                                    com.frit.app.ui.creative.components.CreativeImage(
+                                        source = projectImage,
+                                        modifier = Modifier.fillMaxSize(),
+                                        contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                                        label = "",
                                     )
+                                } else {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Icon(
+                                            if (project.type == "video") Icons.Default.Videocam else Icons.Default.Image,
+                                            contentDescription = null
+                                        )
+                                    }
                                 }
                             }
                             Spacer(modifier = Modifier.width(12.dp))
@@ -122,8 +149,21 @@ fun ProjectListScreen(
                             }
                             IconButton(onClick = {
                                 scope.launch(Dispatchers.IO) {
-                                    com.frit.app.data.NetworkClient.deleteProject(project.id)
-                                    projects = projects.filter { it.id != project.id }
+                                    // F-13 follow-up: NetworkClient returns an
+                                    // error JSON instead of throwing, so a
+                                    // failed delete used to remove the row from
+                                    // the UI while the server still had it.
+                                    val resp = runCatching {
+                                        com.frit.app.data.NetworkClient.deleteProject(project.id)
+                                    }.getOrDefault("")
+                                    val ok = runCatching {
+                                        org.json.JSONObject(resp).optBoolean("ok", false)
+                                    }.getOrDefault(false)
+                                    if (ok) {
+                                        projects = projects.filter { it.id != project.id }
+                                    } else {
+                                        error = "Could not delete the project — it is still on the server."
+                                    }
                                 }
                             }) {
                                 Icon(Icons.Default.Delete, contentDescription = "Delete")

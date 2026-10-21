@@ -46,11 +46,25 @@ fun TemplatePreviewCard(
                     .background(MaterialTheme.colorScheme.surfaceVariant),
                 contentAlignment = Alignment.Center
             ) {
-                Text(
-                    template.aspectRatio,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                // F-13 follow-up: the API returns a thumbnail for each
+                // template and the gallery drew a grey box with the aspect
+                // ratio instead — the user saw no pictures at all. Render the
+                // real thumbnail, and keep the aspect-ratio label as the
+                // placeholder when there is none.
+                if (template.thumbnailUrl != null) {
+                    CreativeImage(
+                        source = template.thumbnailUrl,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                        label = "",
+                    )
+                } else {
+                    Text(
+                        template.aspectRatio,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
             Spacer(modifier = Modifier.height(8.dp))
             Text(

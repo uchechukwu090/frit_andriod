@@ -23,11 +23,42 @@ import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
 
+/**
+ * Read a picked image as a data URL, DOWNSAMPLED.
+ *
+ * F-13 follow-up: this used to read the whole file and base64 it. A 12 MP
+ * camera photo is ~4 MB of bytes and ~16 MB of base64 — which then sat in
+ * Compose state, was the body of the next request, and was pushed through
+ * the hand-off bus. The editor OOM'd on the very first import. Decoding the
+ * bounds first and sampling down to a sane edge keeps every downstream step
+ * (upload, preview, save) small enough to actually work.
+ */
+private const val IMPORT_MAX_EDGE = 2048
+private const val IMPORT_JPEG_QUALITY = 88
+
 fun uriToDataUrl(ctx: android.content.Context, uri: Uri, mimeHint: String): String? {
     return try {
         val mime = ctx.contentResolver.getType(uri) ?: mimeHint
         val bytes = ctx.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: return null
-        "data:$mime;base64," + Base64.encodeToString(bytes, Base64.NO_WRAP)
+        if (bytes.isEmpty()) return null
+        // Non-images (video references etc.) are passed through untouched.
+        if (!mime.startsWith("image/")) {
+            return "data:$mime;base64," + Base64.encodeToString(bytes, Base64.NO_WRAP)
+        }
+        val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
+            return "data:$mime;base64," + Base64.encodeToString(bytes, Base64.NO_WRAP)
+        }
+        var sample = 1
+        while (bounds.outWidth / sample > IMPORT_MAX_EDGE || bounds.outHeight / sample > IMPORT_MAX_EDGE) sample *= 2
+        val opts = android.graphics.BitmapFactory.Options().apply { inSampleSize = sample }
+        val bmp = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
+            ?: return "data:$mime;base64," + Base64.encodeToString(bytes, Base64.NO_WRAP)
+        val out = java.io.ByteArrayOutputStream()
+        bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, IMPORT_JPEG_QUALITY, out)
+        bmp.recycle()
+        "data:image/jpeg;base64," + Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
     } catch (_: Exception) { null }
 }
 

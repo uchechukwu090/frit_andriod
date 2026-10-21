@@ -1,5 +1,6 @@
 package com.frit.app.features.creative
 
+import com.frit.app.ui.creative.strOrNull
 import com.frit.app.data.NetworkClient
 import org.json.JSONObject
 
@@ -20,7 +21,7 @@ data class CreativeProject(
             name = json.optString("name", "Untitled"),
             type = json.optString("type", "image"),
             status = json.optString("status", "draft"),
-            thumbnailUrl = json.optString("thumbnail_url").ifBlank { null },
+            thumbnailUrl = json.strOrNull("thumbnail_url"),
             assets = json.optJSONArray("assets")?.let { arr ->
                 (0 until arr.length()).mapNotNull { i ->
                     val o = arr.optJSONObject(i) ?: return@mapNotNull null
@@ -51,7 +52,7 @@ data class CreativeAsset(
             kind = json.optString("kind", "image"),
             source = json.optString("source", "uploaded"),
             currentUrl = json.optString("current_url", ""),
-            thumbnailUrl = json.optString("thumbnail_url").ifBlank { null },
+            thumbnailUrl = json.strOrNull("thumbnail_url"),
             metadata = json.optJSONObject("metadata"),
             version = json.optInt("version", 1)
         )
@@ -78,7 +79,7 @@ data class EditedResult(
     companion object {
         fun fromJson(json: JSONObject) = EditedResult(
             resultUrl = json.optString("result", json.optString("result_url", "")),
-            thumbnailUrl = json.optString("thumbnail_url").ifBlank { null },
+            thumbnailUrl = json.strOrNull("thumbnail_url"),
             width = json.optInt("width", 0),
             height = json.optInt("height", 0)
         )
@@ -124,7 +125,7 @@ data class CreativeTemplate(
             category = json.optString("category", ""),
             platform = json.optString("platform", ""),
             aspectRatio = json.optString("aspect_ratio", "1:1"),
-            thumbnailUrl = json.optString("thumbnail_url").ifBlank { null }
+            thumbnailUrl = json.strOrNull("thumbnail_url")
         )
     }
 }

@@ -25,6 +25,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
+import com.frit.app.ui.creative.components.normalizeMediaUrl
+import com.frit.app.ui.creative.components.MIME_VIDEO
 
 private data class DirectorShot(
     val index: Int,
@@ -165,7 +167,7 @@ fun DirectorScreen(
                                     s.optString("prompt", ""),
                                     s.optString("kind", "image"),
                                     s.optBoolean("ok", false),
-                                    s.optString("image_url").ifBlank { null } ?: s.optString("url").ifBlank { null },
+                                    s.strOrNull("image_url") ?: s.strOrNull("url"),
                                     s.optString("error").ifBlank { null },
                                     verdict
                                 )
@@ -222,9 +224,12 @@ fun DirectorScreen(
             filmFile?.let { f ->
                 Card(Modifier.fillMaxWidth()) { GeneratedVideo(f, Modifier.fillMaxWidth().height(260.dp)) }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                    DownloadIconButton(url = filmB64, kind = "video", onStatus = { status = it })
+                        DownloadIconButton(url = normalizeMediaUrl(filmB64, MIME_VIDEO), kind = "video", onStatus = { status = it })
                 }
-                HandoffRow(media = filmB64, kind = "video", onHandoff = onHandoff)
+                // F-13 follow-up: filmB64 is a RAW base64 blob (no data: prefix),
+                // so the hand-off used to carry a value the next studio could
+                // not decode. Normalise it here.
+                HandoffRow(media = normalizeMediaUrl(filmB64, MIME_VIDEO) ?: "", kind = "video", onHandoff = onHandoff)
                 OutlinedButton(
                     onClick = {
                         if (filmB64 != null) {

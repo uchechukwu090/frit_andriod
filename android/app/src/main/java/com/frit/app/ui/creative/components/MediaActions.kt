@@ -36,14 +36,48 @@ import java.io.File
 import java.net.URL
 import com.frit.app.features.creative.CreativeSuiteEngine
 
-/** Decode a data: URL or http(s) URL to raw bytes. Null when undecodable. */
+/**
+ * Decode a media source to raw bytes.
+ *
+ * Accepts a `data:` URI, a RAW base64 blob (the server sends `image_b64` /
+ * `video_base64` with no prefix) or an http(s) URL. Null when undecodable.
+ *
+ * F-13 follow-up: the http branch used `java.net.URL(...).openStream()`, which
+ * sends NO Authorization header and has NO timeout. Two consequences: the
+ * server's own media endpoints (`/videos/content/<id>`) answer 401, so
+ * downloading a rendered clip ALWAYS failed; and a dead host hung the
+ * coroutine forever. It now goes through OkHttp with the app's bearer token
+ * and a bounded timeout.
+ */
 fun mediaUrlToBytes(url: String): ByteArray? = try {
-    if (url.startsWith("data:")) {
-        val b64 = url.substringAfter(",", "")
-        if (b64.isBlank()) null else Base64.decode(b64, Base64.DEFAULT)
-    } else if (url.startsWith("http")) {
-        URL(url).openStream().use { it.readBytes() }
-    } else null
+    val s = url.trim()
+    when {
+        s.isEmpty() || s.equals("null", ignoreCase = true) -> null
+        s.startsWith("data:") -> {
+            val b64 = s.substringAfter(",", "")
+            if (b64.isBlank()) null else Base64.decode(b64, Base64.DEFAULT)
+        }
+        s.startsWith("http") -> {
+            val req = okhttp3.Request.Builder()
+                .url(s)
+                .apply {
+                    // The FRIT server's media routes are auth-gated.
+                    val token = runCatching { com.frit.app.data.NetworkClient.auth() }.getOrDefault("")
+                    if (token.isNotBlank()) header("Authorization", "Bearer $token")
+                }
+                .build()
+            val client = okhttp3.OkHttpClient.Builder()
+                .connectTimeout(20, java.util.concurrent.TimeUnit.SECONDS)
+                .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
+                .build()
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) null else resp.body?.bytes()
+            }
+        }
+        // A bare base64 blob (no data: prefix) — the server sends these.
+        isBareBase64(s) -> Base64.decode(s, Base64.DEFAULT)
+        else -> null
+    }
 } catch (_: Exception) { null }
 
 private fun sniffExt(bytes: ByteArray, kind: String): Pair<String, String> {

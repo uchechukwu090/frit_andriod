@@ -14,6 +14,7 @@ import com.frit.app.ui.creative.components.CreativeTopBar
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import org.json.JSONObject
+import com.frit.app.ui.creative.components.normalizeMediaUrl
 
 @Composable
 fun InfluencerScreen(onClose: () -> Unit = {}, onHandoff: (String) -> Unit = {}) {
@@ -88,15 +89,15 @@ fun InfluencerScreen(onClose: () -> Unit = {}, onHandoff: (String) -> Unit = {})
                             ).filter { it.isNotBlank() }.joinToString("\n")
                             val cs = r.optJSONObject("character_sheet")
                             sheetUrl = cs?.let { p ->
-                                p.optString("image_url").ifBlank { null }
-                                    ?: p.optString("image_b64").ifBlank { null }?.let { "data:image/png;base64,$it" }
+                                p.strOrNull("image_url")
+                                    ?: p.strOrNull("image_b64")?.let { normalizeMediaUrl(it) }
                             }
                             val arr = r.optJSONArray("posts")
                             if (arr != null) {
                                 postImages = (0 until arr.length()).map { i ->
                                     val p = arr.getJSONObject(i)
-                                    val u = p.optString("image_url").ifBlank { null }
-                                        ?: p.optString("image_b64").ifBlank { null }?.let { "data:image/png;base64,$it" }
+                                    val u = p.strOrNull("image_url")
+                                        ?: p.strOrNull("image_b64")?.let { normalizeMediaUrl(it) }
                                     p.optString("caption") to u
                                 }
                                 ideas = postImages.map { it.first }

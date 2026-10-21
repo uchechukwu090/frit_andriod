@@ -175,7 +175,7 @@ fun StoryboardScreen(
                                                 index = f.optInt("index", i),
                                                 description = f.optString("description", ""),
                                                 prompt = f.optString("prompt", ""),
-                                                imageUrl = f.optString("image_url").ifBlank { null },
+                                                imageUrl = f.strOrNull("image_url"),
                                                 error = f.optString("error").ifBlank { null }
                                             )
                                         }

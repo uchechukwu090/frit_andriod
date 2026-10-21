@@ -21,8 +21,20 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
 
-data class BrandKit(val id: String, val name: String, val colors: List<String>, val font: String, val palette: String, val tone: String)
+// F-13 follow-up: logoUrl was returned by the server but never modelled, so
+// the uploaded brand logo was invisible in the kit list.
+data class BrandKit(
+    val id: String,
+    val name: String,
+    val colors: List<String>,
+    val font: String,
+    val palette: String,
+    val tone: String,
+    val logoUrl: String? = null
+)
 
 @Composable
 fun BrandKitScreen(onClose: () -> Unit = {}, onApply: () -> Unit = {}) {
@@ -66,7 +78,8 @@ fun BrandKitScreen(onClose: () -> Unit = {}, onApply: () -> Unit = {}) {
                     BrandKit(
                         k.optString("id"), k.optString("name"),
                         if (ca != null) (0 until ca.length()).map { ca.optString(it) } else emptyList(),
-                        k.optString("font"), k.optString("palette"), k.optString("tone")
+                        k.optString("font"), k.optString("palette"), k.optString("tone"),
+                        k.strOrNull("logo_url")
                     )
                 }
             } catch (e: Exception) { Diag.warn("Creative", "brandkit_parse", e) }
@@ -119,6 +132,17 @@ fun BrandKitScreen(onClose: () -> Unit = {}, onApply: () -> Unit = {}) {
                 items(kits, key = { it.id }) { k ->
                     Card(Modifier.fillMaxWidth()) {
                         Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                            // F-13 follow-up: the server returns the uploaded
+                            // logo for every kit; it was never rendered.
+                            if (!k.logoUrl.isNullOrBlank()) {
+                                com.frit.app.ui.creative.components.CreativeImage(
+                                    source = k.logoUrl,
+                                    modifier = Modifier.size(40.dp).clip(RoundedCornerShape(8.dp)),
+                                    contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                                    label = "",
+                                )
+                                Spacer(Modifier.width(10.dp))
+                            }
                             Column(Modifier.weight(1f)) {
                                 Text(k.name, style = MaterialTheme.typography.bodyMedium)
                                 Text(listOf(k.colors.joinToString(" "), k.font, k.palette, k.tone).filter { it.isNotBlank() }.joinToString(" • "), style = MaterialTheme.typography.bodySmall)

@@ -121,31 +121,22 @@ suspend fun awaitVideoFile(ctx: android.content.Context, providerId: String, onS
 }
 
 /** Renders http URLs via Coil and data: URLs by decoding the bytes directly (no blank squares). */
+/**
+ * Image preview for the whole creative suite.
+ *
+ * F-13 follow-up: this used to decode the `data:` PNG at FULL RESOLUTION
+ * (`BitmapFactory.decodeByteArray(bytes, 0, bytes.size)`, no `inSampleSize`)
+ * and fall back to Coil only for http URLs. A 2048x2048 image is 16 MB of
+ * ARGB_8888 and a 12 MP photo ~48 MB; a grid of 6-8 previews is 100-400 MB,
+ * so the app was OOM-killed and the preview silently showed nothing. It also
+ * treated the literal string "null" (org.json's optString on a JSON null) as a
+ * URL and tried to load it.
+ *
+ * Now both shapes go through the shared, downsampling loader.
+ */
 @Composable
 fun GeneratedImage(src: String, modifier: Modifier = Modifier) {
-    if (src.startsWith("data:")) {
-        val state by produceState<Any?>(initialValue = null, src) {
-            value = withContext(Dispatchers.Default) {
-                try {
-                    val bytes = Base64.decode(src.substringAfter("base64,"), Base64.DEFAULT)
-                    BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap() ?: "failed"
-                } catch (_: Throwable) { "failed" }
-            }
-        }
-        when (val s = state) {
-            is androidx.compose.ui.graphics.ImageBitmap ->
-                Image(bitmap = s, contentDescription = null, modifier = modifier, contentScale = ContentScale.Fit)
-            "failed" -> Text("The image came back but couldn't be decoded.", style = MaterialTheme.typography.bodySmall)
-            else -> CircularProgressIndicator()
-        }
-    } else {
-        var failed by remember(src) { mutableStateOf(false) }
-        if (failed) Text("Preview failed to load: $src", style = MaterialTheme.typography.bodySmall)
-        else coil.compose.AsyncImage(
-            model = src, contentDescription = null, modifier = modifier,
-            contentScale = ContentScale.Fit, onError = { failed = true }
-        )
-    }
+    com.frit.app.ui.creative.components.CreativeImage(source = src, modifier = modifier)
 }
 
 /** Inline mp4 player with transport controls. */

@@ -121,7 +121,7 @@ fun KatanaScreen(onClose: () -> Unit = {}, onSubscribe: () -> Unit = {}, onHando
                                 var capArr: org.json.JSONArray? = null
                                 if (res != null) for (i in 0 until res.length()) {
                                     val o = res.optJSONObject(i) ?: continue
-                                    val vb = o.optString("video_base64").ifBlank { null }
+                                    val vb = o.strOrNull("video_base64")
                                     val subs = o.optJSONArray("subtitles")
                                     if (vb != null) {
                                         resultVideo = "data:video/mp4;base64,$vb"
@@ -140,7 +140,7 @@ fun KatanaScreen(onClose: () -> Unit = {}, onSubscribe: () -> Unit = {}, onHando
                                 captionSubs = capArr
                                 captionLines = capLines
                                 // The chained result (each op's output fed the next).
-                                val finalVb = r.optString("video_base64").ifBlank { null }
+                                val finalVb = r.strOrNull("video_base64")
                                 if (finalVb != null) resultVideo = "data:video/mp4;base64,$finalVb"
                                 if (sb.isEmpty()) {
                                     val ops = r.optJSONArray("ops")

@@ -20,6 +20,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
 
 data class SoulElement(val id: String, val name: String, val type: String, val refs: Int, val refUrls: List<String> = emptyList())
 
@@ -97,6 +99,19 @@ fun CharactersScreen(onClose: () -> Unit = {}, onUseElement: (String) -> Unit = 
                 items(elements, key = { it.id }) { e ->
                     Card(Modifier.fillMaxWidth()) {
                         Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                            // F-13 follow-up: the API returns reference_urls for
+                            // every element but the list drew no picture at all.
+                            // Show the first reference as the element's face.
+                            val firstRef = e.refUrls.firstOrNull()
+                            if (firstRef != null) {
+                                com.frit.app.ui.creative.components.CreativeImage(
+                                    source = firstRef,
+                                    modifier = Modifier.size(44.dp).clip(RoundedCornerShape(8.dp)),
+                                    contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                                    label = "",
+                                )
+                                Spacer(Modifier.width(10.dp))
+                            }
                             Column(Modifier.weight(1f)) {
                                 Text(e.name, style = MaterialTheme.typography.bodyMedium)
                                 Text("${e.type} • ${e.refs} refs", style = MaterialTheme.typography.bodySmall)

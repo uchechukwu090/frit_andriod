@@ -1,5 +1,7 @@
 package com.frit.app.ui.creative
 
+import com.frit.app.ui.creative.components.MIME_IMAGE
+import com.frit.app.ui.creative.components.normalizeMediaUrl
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
@@ -322,7 +324,7 @@ fun DesignStudioScreen(onClose: () -> Unit = {}, onHandoff: (String) -> Unit = {
                                 val insp = r.optJSONObject("inspiration")
                                 val studied = insp?.optJSONArray("studied")
                                 studiedRefs = (0 until (studied?.length() ?: 0)).mapNotNull { i ->
-                                    studied?.optJSONObject(i)?.optString("image_url")?.takeIf { it.isNotBlank() }
+                                    studied?.optJSONObject(i)?.strOrNull("image_url")
                                 }
                                 val div = r.optJSONObject("divergence")?.optJSONArray("changed")
                                 val divText = (0 until (div?.length() ?: 0)).joinToString(", ") { div?.optString(it).orEmpty() }
@@ -335,8 +337,12 @@ fun DesignStudioScreen(onClose: () -> Unit = {}, onHandoff: (String) -> Unit = {
                                     if (divText.isNotBlank()) append("\nPushed away from the references: $divText")
                                 }.trim()
                                 val rr = r.optJSONObject("render")
-                                val src = rr?.optString("image_url").orEmpty().ifBlank { rr?.optString("image_b64").orEmpty() }
-                                val url: String? = if (src.isBlank()) null else if (src.startsWith("http")) src else "data:image/png;base64,$src"
+                                val src = rr?.strOrNull("image_url") ?: rr?.strOrNull("image_b64")
+                                // The model decides the bytes: Recraft hands back
+                                // webp, Seedream png. Wrapping a webp payload in
+                                // a data:image/png URI shows nothing.
+                                val mime = rr?.optString("media_type")?.takeIf { it.isNotBlank() } ?: MIME_IMAGE
+                                val url: String? = normalizeMediaUrl(src, mime)
                                 val v = r.optJSONObject("verification")
                                 val issues = v?.optJSONArray("issues")
                                 verifyLine = when {
@@ -363,8 +369,8 @@ fun DesignStudioScreen(onClose: () -> Unit = {}, onHandoff: (String) -> Unit = {
                             val arr = r.optJSONArray("designs") ?: JSONArray()
                             results = (0 until arr.length()).map { i ->
                                 val d = arr.getJSONObject(i)
-                                val url = d.optString("image_url").ifBlank { null }
-                                    ?: d.optString("image_b64").ifBlank { null }?.let { "data:image/png;base64,$it" }
+                                val url = d.strOrNull("image_url")
+                                    ?: d.strOrNull("image_b64")?.let { normalizeMediaUrl(it) }
                                 url to (if (d.optBoolean("ok")) d.optString("model_used") else "failed: " + d.optString("error"))
                             }
                             val okCount = results.count { it.first != null }

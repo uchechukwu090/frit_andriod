@@ -168,9 +168,9 @@ fun ExportScreen(
                                     // F-13: video exports now come back re-encoded to the
                                     // platform canvas as video_base64 (not a data URL), so
                                     // build one here for the share/save flow.
-                                    val videoB64 = r.optString("video_base64")
+                                    val videoB64 = r.strOrNull("video_base64")
                                     val result = when {
-                                        videoB64.isNotBlank() -> "data:video/mp4;base64,$videoB64"
+                                        videoB64 != null -> "data:video/mp4;base64,$videoB64"
                                         else -> r.optString("result")
                                     }
                                     if (result.isNotBlank()) resultAsset = result

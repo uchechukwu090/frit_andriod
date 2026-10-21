@@ -23,6 +23,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
+import com.frit.app.ui.creative.components.normalizeMediaUrl
 
 @Composable
 fun TemplateGalleryScreen(
@@ -56,8 +57,8 @@ fun TemplateGalleryScreen(
                 val assets = JSONArray()
                 if (applyAsset != null) assets.put(applyAsset)
                 val r = JSONObject(NetworkClient.applyTemplate(t.id, assets))
-                val rendered = r.optString("image_url").ifBlank { null }
-                    ?: r.optString("image_b64").ifBlank { null }?.let { "data:image/png;base64,$it" }
+                val rendered = r.strOrNull("image_url")
+                    ?: r.strOrNull("image_b64")?.let { normalizeMediaUrl(it) }
                 applyRender = rendered
                 applyResult = if (rendered != null) {
                     "Rendered “${r.optString("name", t.name)}” • ${r.optInt("width")}x${r.optInt("height")}"

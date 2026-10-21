@@ -107,7 +107,7 @@ fun VideoEditorScreen(
                 if (locked != null) {
                     done("${locked.message} — open Wallet to subscribe.")
                 } else if (r.optBoolean("ok", false)) {
-                    resultB64 = r.optString("video_base64").ifBlank { null }
+                    resultB64 = r.strOrNull("video_base64")
                     val applied = r.optJSONArray("applied")
                     val lastSize = applied?.optJSONObject(applied.length() - 1)?.optInt("size") ?: 0
                     done("Done — ${applied?.length() ?: 0} op(s) applied" + (if (lastSize > 0) " • ~${lastSize / 1024} KB" else ""))

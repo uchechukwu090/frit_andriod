@@ -155,8 +155,9 @@ fun LipSyncScreen(onClose: () -> Unit = {}, onSubscribe: () -> Unit = {}, onHand
                                     kotlinx.coroutines.delay(5000)
                                     try {
                                         val st = JSONObject(NetworkClient.getLipSyncStatus(jid))
-                                        if (st.optString("status") == "done" && st.optString("result_url").isNotBlank()) {
-                                            resultUrl = st.optString("result_url")
+                                        val stUrl = st.strOrNull("result_url")
+                                        if (st.optString("status") == "done" && !stUrl.isNullOrBlank()) {
+                                            resultUrl = stUrl
                                             status = "Done — neural lip-sync ready."
                                             break
                                         }

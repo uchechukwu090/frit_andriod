@@ -21,9 +21,13 @@ fun GestureImageViewer(
     onDoubleTap: () -> Unit = {},
     onLongPress: () -> Unit = {}
 ) {
-    var scale by remember { mutableFloatStateOf(1f) }
-    var offset by remember { mutableStateOf(Offset.Zero) }
-    var rotation by remember { mutableFloatStateOf(0f) }
+    // F-13 follow-up: the zoom/pan/rotation state was NOT keyed on the image,
+    // so after an edit the NEW picture opened at the previous zoom and pan —
+    // which looks exactly like "the preview did not update". Key it on the
+    // image so every new image starts from a clean view.
+    var scale by remember(imageUrl) { mutableFloatStateOf(1f) }
+    var offset by remember(imageUrl) { mutableStateOf(Offset.Zero) }
+    var rotation by remember(imageUrl) { mutableFloatStateOf(0f) }
 
     val state = rememberTransformableState { zoomChange, offsetChange, rotationChange ->
         scale = (scale * zoomChange).coerceIn(0.5f, 5f)
