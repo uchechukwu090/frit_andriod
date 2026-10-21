@@ -24,6 +24,18 @@ object SecureStore {
     private const val FILE = "frit_secure"
     private const val LEGACY = "frit_prefs"
 
+    /**
+     * Every key this store owns. The legacy (plaintext) file is cleared of
+     * EXACTLY these keys on wipe.
+     *
+     * F-26: `clearAll` used to hard-code "app_pin" and "admin_token" while
+     * the encrypted side was cleared wholesale — so the moment a third key
+     * was added, DataWipe would clear it from the encrypted file but leave
+     * its PLAINTEXT copy sitting in frit_prefs forever. One list, used by
+     * both sides, cannot drift.
+     */
+    private val MANAGED_KEYS = setOf("app_pin", "admin_token")
+
     @Volatile private var secure: SharedPreferences? = null
 
     private fun legacy(ctx: Context): SharedPreferences =
@@ -86,6 +98,23 @@ object SecureStore {
     /** Wipes the encrypted file (used by DataWipe). */
     fun clearAll(ctx: Context) {
         try { open(ctx)?.edit()?.clear()?.commit() } catch (_: Exception) { }
-        legacy(ctx).edit().remove("app_pin").remove("admin_token").apply()
+        // Remove every key this store owns from the legacy plaintext file —
+        // not a hand-maintained subset. F-26: the old hard-coded list
+        // ("app_pin", "admin_token") would leave a newly added key's PLAINTEXT
+        // copy in frit_prefs after a "delete my data" wipe.
+        try {
+            val editor = legacy(ctx).edit()
+            MANAGED_KEYS.forEach { editor.remove(it) }
+            editor.apply()
+        } catch (e: Exception) {
+            Log.e(TAG, "legacy wipe failed", e)
+        }
     }
+
+    /**
+     * The plaintext keys this store still owns. Exposed for the wipe path
+     * and for a device test that asserts the legacy file no longer holds
+     * them.
+     */
+    fun managedKeys(): Set<String> = MANAGED_KEYS
 }

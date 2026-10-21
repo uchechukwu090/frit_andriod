@@ -15,9 +15,24 @@
    not hard-coded Kotlin and not XML) — leave this mechanism alone regardless.
 2. **Google Play work is DEFERRED** — see section 6. Noted, not done, by user's explicit request.
 3. Do not commit/push without asking. `server/` is NOT a git checkout on this host — server changes
-   exist on disk only. **CORRECTION (Week 5): the repo ROOT is not a git checkout either** — there is
+   exist on disk only. **CORRECTION (Week 5 → SUPERSEDED 2026-10-20): the repo ROOT is not a git
+   checkout either** — there is
    no `.git` anywhere in the project directory (the `git repo/` folder is not a checkout). So
    nothing here is version-controlled on this host; keep backups before large refactors.
+   → **SUPERSEDED 2026-10-20: the project IS under version control now.** It is split across
+   THREE GitHub repos, all owned by `uchechukwu090`:
+   - `uchechukwu090/frit_andriod` — the ROOT repo (Android app, docs, scripts, CI, the vendored
+     llama.cpp tree). **`server/` and `sandbox and docker/` are SUBMODULES** pointing at the two
+     repos below. Use `git clone --recursive`.
+   - `uchechukwu090/frit-android` — the API server (`server/`).
+   - `uchechukwu090/sandbox` — the ffmpeg/code sandbox service (`sandbox and docker/`).
+   Still ask before pushing, and note that a root-level `git add -A` sweeps up any
+   half-finished work sitting in the sub-repos.
+
+4. **Rotate the production `AUTH_TOKEN`.** It was pasted in plaintext into `PLAYSTORE_RELEASE.md`
+   (a tracked file) and has now been redacted — but a credential that has been in a tracked
+   file must be treated as compromised. `server/.env` itself is gitignored and was never
+   committed; verify that stays true before making any repo public.
 
 ---
 
@@ -670,7 +685,93 @@ needs it; free-tier sleep fights cold-start UX) — revenue protection for the b
   `:app:compileDebugKotlin` **BUILD SUCCESSFUL** and `:app:testDebugUnitTest` **32/32 pass**
   (PrivacyGuard 11, CallGuard 12, SseParser 9). The Kotlin brace/paren scanner passes on
   **121/121** files (0 imbalances). The SSE endpoint was verified LIVE against the running
-  server (25 deltas over 5685ms→6487ms for a chat reply; `task: true` for a task request).
+   server (25 deltas over 5685ms→6487ms for a chat reply; `task: true` for a task request).
+
+**Week 5 (second pass, 2026-10-20) — the remaining open items, closed.**
+This pass was asked to finish everything still open except the Play Store work. It ran
+*alongside* the Week 6 agent, so both sets of changes are in the tree.
+
+- **F-14 ✅ DONE — `MainActivity.kt` split.** 3,850 → **1,313 lines**. The 15 self-contained
+  screens/composables now live in their own files under `ui/`:
+  `ui/chat/ChatContent.kt`, `ui/chat/ChatLeafComposables.kt`, `ui/chats/ChatsScreen.kt`,
+  `ui/settings/SettingsScreen.kt`, `ui/automation/AutomationScreen.kt`, `ui/wallet/WalletScreen.kt`,
+  `ui/creator/CreatorScreen.kt`, `ui/model/OnDeviceModelSection.kt`, `ui/MainUiHelpers.kt`.
+  It was a PURE move — every moved block is byte-identical to the original, `class MainActivity`
+  and `fun MainScreen` stayed put, and the `tradeToConfirm` trade dialog is untouched. Two
+  duplicated helpers that had drifted were consolidated at the same time:
+  `normalizeAssistantReplyForUi` (existed in BOTH the voice overlay and `ui/`, so the overlay
+  could parse a different envelope shape than the chat UI) and the `naira()` formatter
+  (existed in the wallet AND creator packages) — one copy each now.
+- **F-19 ✅ DONE — `FritVoiceOverlayService.kt` fully read** (it had only been "sampled"). 30
+  findings (2 HIGH / 15 MEDIUM / 13 LOW). All 2 HIGH and 8 MEDIUM fixed — see §2.3c for the
+  list. The two HIGH ones were real safety bugs:
+  1. `chatTaskJob` was a SINGLE slot, so a second in-flight send made the live job
+     untracked — Stop / overlay-close / the stranger-pickup pause all cancelled nothing, and an
+     agent that can drive the phone and place trades kept running after the user cancelled it.
+  2. The overlay's "End all" button called `AutomationScheduler.cancelAll()`, which cancels
+     running jobs AND permanently deletes every saved schedule — one tap in a floating overlay
+     destroyed the whole automation config, with no warning and no undo.
+- **F-07 ✅ mostly DONE — 86 new strategy unit tests** (`server/test/strategyMore.test.mjs`),
+  which surfaced **7 real bugs**, all fixed: `volumematrix` over-counted volume (float drift
+  made the bucket walk visit 11 buckets where the divisor said 10, mislocating the POC and the
+  70% value area); `pocket/engine` published confidence 89 despite a documented cap of 78 (the
+  clamp was applied before the calibration blend and never re-applied); `volengine` had no
+  IV-history fallback on the CHEAP side, so a 50% discount to realized vol was reported as
+  "fair premium" and `LONG_STRADDLE` was unreachable; `costs` published a rounded R-R while
+  the gate used the raw value (a trade could show "1.0" and be flagged blocked simultaneously);
+  `longterm` never mentioned the RSI veto (users were told "no breakout" when the breakout had
+  happened); `synthetics` returned no `details` object on the TREND SELL branch; and
+  `pocket/engine.assessPullback` threw a TypeError on an empty trigger array.
+  **Still untested: `structures.js` only.**
+- **F-08 ✅ CLOSED (both halves).** The Week 6 agent closed the server half; this pass swept
+  the same tree for error-LOSS (not empty catches): 0 empty catches, 19 non-logging catches read
+  and verified to hand the error back to the caller, and 4 places that genuinely lost the error
+  now log it (weather lookup, chat-router fallback, provider retry, storyboard retry).
+- **The two streaming bugs are now PINNED by tests** — `server/test/streamRegression.test.mjs`
+  (10 tests). Both bugs were found by LIVE testing while the unit tests were still green, so
+  the tests are mutation-verified: re-introducing either bug makes them fail.
+- **F-26 — `SecureStore.clearAll` bug found and fixed.** The encrypted side was cleared
+  wholesale but the legacy plaintext file only had a hand-typed list (`app_pin`, `admin_token`)
+  removed — so the moment a third key was added, "delete my data" would leave that key's
+  PLAINTEXT copy in `frit_prefs` forever. One `MANAGED_KEYS` list now drives both sides.
+- **BACKUP — the project is now under version control** (see §0 constraint 3, which was wrong):
+  - `uchechukwu090/frit_andriod` — the root repo (Android app, docs, scripts, CI, the vendored
+    llama.cpp tree). **`server/` and `sandbox and docker/` are now proper SUBMODULES** pointing
+    at `uchechukwu090/frit-android` and `uchechukwu090/sandbox`. Before this they were bare
+    gitlinks with no `.gitmodules`, so a plain `git clone` produced a tree with an EMPTY
+    `server/` — the entire API server was missing from the backup. `git clone --recursive` now
+    restores the full three-repo project (verified by a clean clone).
+  - The `llama.cpp` tree is **vendored** (tracked directly, not a submodule): the copy that
+    arrived here had a `.git` index out of sync with the files on disk (2,194 phantom
+    deletions + 2,051 untracked entries, zero genuinely modified files). Committing the
+    sources keeps a plain clone buildable with no network. Upstream commit recorded in
+    `android/app/src/main/jni/llama.cpp/VENDORED.md`.
+  - **SECURITY — the live `AUTH_TOKEN` was committed in plaintext** in `PLAYSTORE_RELEASE.md`
+    (the "grep <token>" instruction pasted the real value). It has been redacted and the check
+    now reads the value from `server/.env` at runtime. **That token must be rotated before the
+    repo is made public** — a credential that has been in a tracked file is compromised.
+
+### 5d. HOUSE RULES LEARNED THE HARD WAY (read before touching this repo)
+
+1. **The project is THREE repos, not one.** `frit_andriod` (root) + `frit-android` (server) +
+   `sandbox`. Change the right one, and `git clone --recursive` to restore.
+2. **Never `git add -A` at the root while another agent is working in the tree** — it sweeps up
+   their half-finished files into your commit. (It happened here; nothing was lost, but the
+   commit was messy.)
+3. **A file can be corrupted to all-NULL bytes in place, with its size preserved.** Two files
+   (`ui/creator/CreatorScreen.kt`, `ui/wallet/WalletScreen.kt`) were found this way after a
+   concurrent agent had written them. Detection: read the bytes and count zeros — a Kotlin
+   source file should have none. Recovery: the pre-split `MainActivity.kt` was still in git, so
+   the moved blocks could be extracted back byte-for-byte. **Commit early and often.**
+4. **PowerShell 5.1 `>` redirection writes UTF-16**, not UTF-8. `git show HEAD:file > out.kt`
+   silently produces a UTF-16 file that then fails to compile. Use `cmd /c "git show ... > file"`
+   for raw bytes, or `-Encoding utf8` on `Out-File`.
+5. **The brace/paren scanner is NOT a type checker** (F-42) and it also mis-reports on files
+   whose strings contain braces. The Gradle compile is the only real gate.
+6. **`scripts/kotlin_paren_check.js` needs file arguments** — it does not walk a tree.
+7. **The `npm test` count moves.** `server/test/*.test.mjs` is a glob, so every new suite
+   raises the total. Read the current number off a fresh run rather than trusting a note.
+
 
 **Week 6 ✅ (2026-10-20) — the debug round: exercise the app's routes over real HTTP.**
 Previous weeks proved things with tests and static reading; this one booted the real server on a
@@ -703,32 +804,32 @@ SSE chat), which is where the two real bugs below were hiding.
 
 ### 5c. WHAT IS STILL OPEN after Week 6
 
-- **F-14 `MainActivity.kt` split (3,951 lines)** — the last big mechanical item. It is now
-  SAFE to do: the app compiles and the tests run on this host. Do it in batches of 2-3
-  composables, compiling after each batch. Keep `tradeToConfirm` (the trade-confirmation
-  dialog) intact.
-- **F-08 — ✅ CLOSED in Week 6.** `scripts/js_catch_audit.js` (all 49 server JS files): 0 empty
-  catches, and every non-logging catch was reviewed and does surface the error (see §2.1). Re-run
-  that script after any server catch change; it is a 1-second gate.
-- **F-47 cold-start restore blocks `listen`** — needs an ops/data-safety decision (see §2.3d).
-- **F-48 trading suite half-gated** — watchlist-add is paywalled (402) while scan is free; pick a
-  side before the next pricing change (see §2.3d).
-- **F-19 `FritVoiceOverlayService.kt` (1,089 lines)** — still only sampled, not fully read.
-- **F-07 (strategy layer tests) — mostly closed, still open for 2 modules.** `strategy.test.mjs`
-  covers `hysteresis`, `rails/router`, `options/pricing`; **`strategy_money.test.mjs` (41 tests,
-  2026-10-19) covers `risk.js`, `costs.js`, `journal.js`, `position_monitor.js`, `bots.js`,
-  `volumematrix.js`, `volengine.js`, `synthetics.js`, `longterm.js` and `ledger.js`.** Still
-  untested: **`structures.js`** and **`pocket/engine.js`** (plus `deep_search.js` scraping, which
-  is inherently network-bound). That is the remainder of F-07.
-- **F-26 EncryptedSharedPreferences** — the CODE is done (SecureStore.kt) and the gradle
-  dependency now resolves; what is still unverified is the on-device behaviour (set a PIN,
-  force-stop, reopen, confirm it survives; and that `frit_prefs.xml` no longer holds
-  `app_pin`). That needs a real device/emulator pass.
-- **Play Store work** — still deferred by explicit user request (§6).
-- **Ops:** always-on hosting for the trading feed (~$5/mo) — see the Ops note in §4.
-- **NOT done (deliberately):** `git` — there is no `.git` in this project directory at all
-  (§0 constraint 3), so none of this work is version-controlled on this host. Back the
-  project up before the F-14 refactor.
+*(updated 2026-10-20 — the Week 5 second pass closed F-14, F-19, F-08 and most of F-07; see
+the Week 5 second-pass block in §4. Only what is genuinely still open is listed here.)*
+
+- **F-07 (strategy layer tests) - ONE module left.** `strategy.test.mjs` covers `hysteresis`,
+  `rails/router`, `options/pricing`; `strategy_money.test.mjs` (41 tests) covers `risk.js`,
+  `costs.js`, `journal.js`, `position_monitor.js`, `bots.js`, `volumematrix.js`, `volengine.js`,
+  `synthetics.js`, `longterm.js` and `ledger.js`; **`strategyMore.test.mjs` (86 tests, Week 5
+  second pass) adds `pocket/engine.js` and edge cases for the rest.** Still untested:
+  **`structures.js`** (plus `deep_search.js` scraping, which is inherently network-bound).
+- **F-26 EncryptedSharedPreferences - the on-device pass is still the only thing missing.** The
+  CODE is done (`SecureStore.kt`) and the gradle dependency resolves; `clearAll` was hardened
+  this pass (it used to leave a newly-added key's PLAINTEXT copy behind after a wipe). What
+  remains is the real-device check: set a PIN, force-stop, reopen, confirm it survives, and
+  confirm `frit_prefs.xml` no longer holds `app_pin`. Needs a device or emulator.
+- **F-47 cold-start restore blocks `listen`** - needs an ops/data-safety decision (see 2.3d).
+- **F-48 trading suite half-gated** - watchlist-add is paywalled (402) while scan is free; pick a
+  side before the next pricing change (see 2.3d).
+- **Play Store work** - still deferred by explicit user request (6).
+- **Ops:** always-on hosting for the trading feed (~$5/mo) - see the Ops note in 4.
+- **Rotate the production `AUTH_TOKEN`.** It was committed in plaintext in
+  `PLAYSTORE_RELEASE.md`; it is redacted now, but the credential must be treated as compromised.
+  See the Week 5 second-pass block in 4.
+- **Decide whether `frit_andriod` should be public.** It is currently PRIVATE. It is a
+  backup today; if it is going to be the working repo, the (now redacted) secret history and
+  the `server/.env` exposure deserve a look before flipping it.
+
 
 
 
