@@ -34,6 +34,18 @@
    file must be treated as compromised. `server/.env` itself is gitignored and was never
    committed; verify that stays true before making any repo public.
 
+4b. 🔴 **SECURITY — LIVE CREDENTIALS ARE IN THE PUBLIC `frit-android` REPO'S HISTORY.**
+   `uchechukwu090/frit-android` is **PUBLIC** (since 2026-03-11) and its history contains a
+   committed `.env` blob (`257c3d4`) whose `AUTH_TOKEN`, `MISTRAL_API_KEY` and
+   `TWELVE_DATA_KEY` are **byte-identical to the live `server/.env` on this host**.
+   A second leak — `frit.db.backup-tmp`, a 929 KB runtime SQLite snapshot — was tracked
+   because `.gitignore` only listed the exact names `frit.db` / `frit.db-shm` / `frit.db-wal` /
+   `*.db-journal`; it is now untracked and the ignore rules cover the whole family, but the
+   blob is still in the old history.
+   **The full rotation + history-purge runbook is `scripts/ROTATE_EXPOSED_SECRETS.md`.
+   Read it and do step 1 (rotate) before anything else.** Rotating is what actually helps —
+   rewriting history does not un-publish what was already cloned.
+
 ---
 
 ## 0b. ✅ ANDROID BUILD TOOLCHAIN IS AVAILABLE (Week 5 — this changes the plan)
@@ -826,9 +838,14 @@ the Week 5 second-pass block in §4. Only what is genuinely still open is listed
 - **Rotate the production `AUTH_TOKEN`.** It was committed in plaintext in
   `PLAYSTORE_RELEASE.md`; it is redacted now, but the credential must be treated as compromised.
   See the Week 5 second-pass block in 4.
+- 🔴 **ROTATE THE THREE PUBLISHED CREDENTIALS** — `AUTH_TOKEN`, `MISTRAL_API_KEY` and
+  `TWELVE_DATA_KEY` are in the PUBLIC `frit-android` repo's history, byte-identical to the
+  live `server/.env`. Runbook: `scripts/ROTATE_EXPOSED_SECRETS.md`. Do the rotation FIRST —
+  it is the step that actually protects you; purging the history does not un-publish what was
+  already cloned. Consider making the repo private as well.
 - **Decide whether `frit_andriod` should be public.** It is currently PRIVATE. It is a
-  backup today; if it is going to be the working repo, the (now redacted) secret history and
-  the `server/.env` exposure deserve a look before flipping it.
+  backup today; if it is going to be the working repo, check the secret history and the
+  `server/.env` exposure before flipping it.
 
 
 
