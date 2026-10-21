@@ -588,6 +588,67 @@ measures the Phase-6 performance targets. Two real bugs fell out of it; both are
   - **Note:** a previous session had left `creative/refs.js` unreferenced; it is better than the
     cache module written alongside it (origin-side proxy fallback, disk cache), so the build was
     consolidated onto it and the duplicate deleted.
+- **Creative Agent — Week 7 round 2 (2026-10-21): one gateway, and a reasoning model was the
+  hidden cause of every "empty completion".**
+  - **F-55 ✅ the Ideogram/Recraft direct API keys are gone — OpenRouter only.** The served
+    `/images` catalogue (61 models, checked live) **includes Recraft** (`recraft/recraft-v3` …
+    `recraft/recraft-v4.1-*`) but **does NOT include Ideogram**, so no `ideogram/…` slug may be
+    configured at all. `IDEOGRAM_API_KEY` / `RECRAFT_API_KEY` were removed from `.env.example`;
+    craft routing is now `OR_TYPE_MODEL=recraft/recraft-v4` and
+    `OR_VECTOR_MODEL=recraft/recraft-v4-vector` (also set in the live `server/.env`).
+    `creative/imageProviders.js` is now the *model knowledge* module: it builds the request per
+    model family — **Recraft rejects `n` and `output_format` and only accepts 1:1 / 4:3 / 3:4 /
+    16:9 / 9:16 / auto**, so the generic body is a 400 there — decides who sets the type
+    (`isTypeSpecialist` → Recraft renders real fonts itself, so our type layer is skipped for it
+    and never both) and keeps the model chain in ONE class so the prompt always matches the
+    renderer. 9 unit tests.
+  - **F-56 ✅ OpenRouter does NOT forward Recraft's native `texts[]` payload.** Verified live: the
+    payload was accepted (no 400) and the text never appeared in the render. The structured-type
+    route is therefore gone and **our type layer is the typography path** for every model except
+    Recraft. The render response now carries `media_type` (Recraft returns webp, Seedream png) and
+    the Android client uses it — it hard-coded `data:image/png;base64,`, which would have shown
+    nothing for a webp payload.
+  - **F-57 ✅ the vision model was a REASONING model, and that explained every failure.** Measured:
+    `z-ai/glm-5.3-flash` spent **900/900 tokens on `reasoning`** and returned `content: ""`
+    (`finish_reason: "length"`, `reasoning_tokens: 900`) — so the reference reads came back
+    empty, the brief looked "truncated", and the reviewer looked broken. The same prompt on
+    `google/gemini-2.5-flash` returns clean JSON in **2.1s with zero reasoning tokens** (GLM:
+    12.8s). Fixes: (a) a new `creative` fallback chain led by `OR_CREATIVE_MODEL`
+    (default `google/gemini-2.5-flash`, configurable from the Creator console) for the creative
+    stages; (b) `chatWithFallback` now moves a model that answered **in the `reasoning` field**
+    into `content` (and only treats a truly empty reply as a failure); (c) the creative stages
+    get real token budgets (4k–6k) instead of 600–1400. The live runs went from 137s/110s (with
+    timeouts and fallbacks) to **60–90s with no timeouts**.
+  - **F-58 ✅ the type layer had three defects the reviewer caught.** The CTA label was centred
+    inside its badge, so a right-aligned CTA did not read as flush right (the badge and the label
+    are now both flush with the margin); the leading was 106% of the font size, which made body
+    lines overlap and read as "garbled"; and the type colour was picked from the brief's
+    background instead of the artwork's real pixels. The layer now **measures the artwork behind
+    the copy** (mean luminance + variance) and lays a **scrim band** when the backdrop is busy or
+    too low-contrast — which also covers the stray lettering an image model leaves behind when it
+    ignores "no text in the image". Poster body copy now has a 20–40px floor (16px was literally
+    unreadable). 16 unit tests.
+  - **F-59 ✅ the creative model was priced 19× too high.** `google/gemini-2.5-flash` costs
+    **$0.30/$2.50** per Mtok; the model the app already uses everywhere else,
+    `z-ai/glm-5.3-flash`, costs **$0.004/$0.134** — and it is the better choice here, because the
+    real problem was never the model, it was the **token budget**: at 900 tokens GLM spent the
+    whole budget on reasoning and returned `content: ""`; at 4000 it answers cleanly. Measured on
+    the real tasks (read a reference image / write a brief), $ per Mtok in/out and cost a call:
+    | model | $/Mtok | brief | vision | cost/call |
+    |---|---|---|---|---|
+    | `z-ai/glm-5.3-flash` | 0.004/0.134 | 1.8s | 7.1s | $0.000030 |
+    | `google/gemma-3-4b-it` | 0.040/0.050 | 1.5s | 2.2s | $0.000019 |
+    | `google/gemini-2.5-flash` | 0.300/2.500 | 6.9s | 2.1s | $0.000140 |
+    `qwen/qwen3.7-flash` (0.03/0.13) burns 1,762 reasoning tokens and takes 20s — not worth it;
+    `google/gemma-3-12b-it` did not return parseable JSON; the `:free` models 429 constantly.
+    The creative chain is now **glm-5.3-flash → gemma-3-4b-it → gemini-2.5-flash (last resort)
+    → draft → fast → mistral**, so the expensive model is only reached if the cheap ones fail.
+    A design costs ~**$0.00015** in LLM calls (3 reference reads + brief + review) against
+    **$0.018** for the image itself — the LLM is ~1% of the bill, so the real levers are the
+    image model and the **number of renders**: each corrective retry is another $0.018.
+    A timeout is expensive too (it throws the read away and the agent falls back to a default
+    brief), so the stage budgets were rebalanced: references 40s each (they run in parallel),
+    brief 60s, total 180s (the Android read timeout is 210s).
 - **Notes (no code change):** (a) `/api/trading/paper-portfolio` on a fresh DB logs
   `[paper-portfolio] options: no such table: options_paper` once and returns 200 without the
   options section — graceful and self-heals; (b) the chat router is conservative: "hi" streams
@@ -813,29 +874,48 @@ needs it; free-tier sleep fights cold-start UX) — revenue protection for the b
   - Every apt package and every pip dependency in the Dockerfile is now checked against the
     real Debian archive / PyPI, and every RUN command is shell-syntax checked.
 
-- **F-48 ✅ DONE (2026-10-20) — the ANDROID CI WORKFLOW could not build the app.** The
-  workflow ran `setup-android` and then `./gradlew :app:assembleDebug`, but `setup-android`
-  installs the base SDK tools ONLY. This project needs `compileSdk 35`, `ndk 30.0.15729638` and
-  `cmake 4.1.2` (the llama.cpp JNI library), none of which were installed, so the Gradle sync
-  failed on a clean runner. The workflow now installs every component explicitly
-  (`platforms;android-35`, `build-tools;35.0.0`, `ndk;30.0.15729638`, `cmake;4.1.2`) and accepts
-  the SDK licences FIRST — otherwise `sdkmanager` blocks on the "do you accept?" prompt and the
-  step hangs until the job times out.
+- **F-46 ✅ DONE (2026-10-20) — the SANDBOX PIP STEP was failing (exit code 1).** The apt fix let
+  the build get further, and then the pip layer failed. Root cause, and it is a trap worth
+  remembering: **pip derives its `PIP_*` environment variables from an option's DEST, not from its
+  flag name.** In pip 23.0.1 the option is
+  `override_externally_managed = partial(Option, "--break-system-packages", dest="override_externally_managed")`,
+  so the env var is **`PIP_OVERRIDE_EXTERNALLY_MANAGED`**. `PIP_BREAK_SYSTEM_PACKAGES` is
+  silently IGNORED — pip then hit the PEP 668 "externally-managed-environment" wall (Debian marks
+  /usr/lib/python3 as externally managed) and exited 1, taking the whole image down.
+  The fix passes `--break-system-packages` **explicitly** (so it never depends on the env-var
+  naming again) and keeps the correct env var as belt-and-braces. On top of that, every package
+  is now installed on its own with retries and timeouts, and a package that still fails is
+  **reported and skipped** rather than aborting the image — one bad package must not cost the
+  other sixteen, and the build log now names exactly which one failed.
+  A checker now validates the Dockerfile end to end: the base tag against Docker Hub, every apt
+  package against the Debian archive, every pip dependency for RESOLVABILITY on the base image's
+  Python (a compatible wheel in *any* release — pip picks the newest version that has one, so
+  the latest release lacking a wheel is fine), and the shell syntax of every `RUN`.
+
+- **F-47 ✅ DONE (2026-10-20) — the ANDROID CI WORKFLOW could not build the app.** Two causes:
+  1. `android-actions/setup-android@v3` CRASHED on the current runner image with
+     "Failed to find package 'tools'" and sdkmanager exit 1 — the action is being retired, so the
+     job died before it ever built. The workflow now uses the Android SDK that GitHub's
+     runners already ship (locating its `sdkmanager` across the `cmdline-tools/*/bin`,
+     `cmdline-tools/bin` and legacy `tools/bin` layouts) instead of re-installing it.
+  2. `setup-android` installs the base SDK tools ONLY. This project needs `compileSdk 35`,
+     `ndk 30.0.15729638` and `cmake 4.1.2` (the llama.cpp JNI library), none of which were
+     installed, so the Gradle sync failed on a clean runner. The workflow now installs every
+     component explicitly and accepts the SDK licences FIRST — otherwise `sdkmanager` blocks on
+     the "do you accept?" prompt and the step hangs until the job times out.
   - **The native build is far too slow for CI.** Compiling llama.cpp for one ABI took **43
-    minutes** on this machine, and a 2-core GitHub runner is slower — the debug build normally
-    builds BOTH arm64-v8a and x86_64, i.e. twice that. So:
-    - `build.gradle.kts` gained `-PskipNative` (skip the native build) and `-PciAbis=<list>`
-      (narrow it to one ABI).
-    - The `build-and-test` job (the gate, on every push and PR) builds **without** the native
-      library: **1m 23s**, all 40 unit tests pass. The Kotlin code and the tests do not need
-      the .so.
-    - A separate `native-build` job (240-minute timeout) builds the APK **with** the native
-      library, and only runs on `workflow_dispatch` — i.e. when you ask for it, not on every push.
+    minutes** on this machine and a 2-core GitHub runner is slower; the debug build normally
+    builds BOTH arm64-v8a and x86_64, i.e. twice that. So `build.gradle.kts` gained
+    `-PskipNative` (skip the native build) and `-PciAbis=<list>` (narrow it to one ABI), and:
+    - `build-and-test` (the gate, every push and PR) builds **without** the native library:
+      **1m 23s**, all 40 unit tests pass. The Kotlin code and the tests do not need the .so.
+    - a separate `native-build` job (240-minute timeout) builds the APK **with** the native
+      library, and only runs on `workflow_dispatch` — when you ask for it, not on every push.
   - Verified locally: `:app:assembleDebug :app:testDebugUnitTest -PskipNative -PciAbis=arm64-v8a`
     → **BUILD SUCCESSFUL in 1m 23s**, `buildCMakeDebug[arm64-v8a] SKIPPED`, 40/40 tests pass.
     With the native build: **BUILD SUCCESSFUL in 43m 31s**, 134 MB APK (one ABI) vs 234 MB (two).
 
-- **F-46 ✅ DONE (2026-10-20) — the AUTH_TOKEN was rotated.** The live token was published in the
+- **F-48 ✅ DONE (2026-10-20) — the AUTH_TOKEN was rotated.** The live token was published in the
   public `frit-android` repo's history (see the security note above), which the user correctly
   pointed out cannot simply be changed server-side without breaking installed apps. It CAN be
   changed safely, because the app bakes the token from `server/.env` at BUILD time
@@ -953,6 +1033,15 @@ This pass was asked to finish everything still open except the Play Store work. 
 6. **`scripts/kotlin_paren_check.js` needs file arguments** — it does not walk a tree.
 7. **The `npm test` count moves.** `server/test/*.test.mjs` is a glob, so every new suite
    raises the total. Read the current number off a fresh run rather than trusting a note.
+8. **pip's `PIP_*` env vars come from an option's DEST, not its flag.** For
+   `--break-system-packages` the dest is `override_externally_managed`, so the env var is
+   `PIP_OVERRIDE_EXTERNALLY_MANAGED`. `PIP_BREAK_SYSTEM_PACKAGES` is silently ignored — and
+   on a PEP 668 "externally managed" Debian that turns into a build failure that looks like a
+   network problem. Pass the flag explicitly.
+9. **Node's Debian image tags put the codename BEFORE `-slim`**: `node:20-bookworm-slim` exists,
+   `node:20-slim-bookworm` does not. Also: `node:20-slim` currently tracks trixie, and
+   `libta-lib-dev` exists in NO Debian suite (verified against MADISON) — the TA-Lib PyPI wheel
+   bundles the C library, so it never needed the system headers.
 
 
 **Week 6 ✅ (2026-10-20) — the debug round: exercise the app's routes over real HTTP.**

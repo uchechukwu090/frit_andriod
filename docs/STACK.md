@@ -11,6 +11,15 @@
 - **Primary Agent LLM**: OpenRouter `z-ai/glm-5.3-flash` (`MODELS.agent/tools/coding`).
 - **Fast Verification & Summary LLM**: OpenRouter `openai/gpt-oss-20b` (`MODELS.fast`).
 - **Draft Subagents**: OpenRouter `deepseek/deepseek-v4-flash` (`MODELS.draft`); free `:free` quota sits behind paid in all fallback chains.
+- **Creative Model** (`OR_CREATIVE_MODEL`, default `z-ai/glm-5.3-flash`): the design-agent
+  stages (read a reference, write the brief, review the render) run here, NOT on the primary brain.
+  It is the cheapest image-capable model on the roster ($0.004/$0.134 per Mtok) and it is the same
+  model the app already uses everywhere else — measured on the real tasks: brief 1.8s, reference
+  read 7.1s, **$0.00003 a call**. The token budget matters more than the model: at 900 tokens
+  GLM spent the whole budget on reasoning and returned `content: ""` (that was the real cause of
+  every "empty completion"); at 4000 it answers cleanly. Fallbacks in order:
+  `google/gemma-3-4b-it` ($0.04/$0.05), `google/gemini-2.5-flash` ($0.30/$2.50 — 19× the price,
+  last resort only), the draft model, the fast model, Mistral.
 - **Vision Inference**: OpenRouter `z-ai/glm-5.3-flash` (native multimodal), `gemini-3.6-flash` legacy fallback only, then `mistral-large-latest`.
 - **Speech-to-Text**: Whisper Large V3 via OpenRouter (`OR_STT_MODEL`).
 - **Image**: `bytedance-seed/seedream-5-0-flash` via OpenRouter `/images`; **Video**: `heygen/heygen-video-1` via OpenRouter `/videos`.

@@ -21,31 +21,49 @@ jobs:
     timeout-minutes: 45
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      # CI FIX: android-actions/setup-android@v3 crashed on the current runner
+      # image ("Failed to find package 'tools'", sdkmanager exit 1). GitHub's
+      # ubuntu runners already ship the Android SDK + cmdline-tools, so we use
+      # that one directly instead of re-installing it.
+      - name: Locate the preinstalled Android SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          # Runner layouts vary: cmdline-tools/latest/bin, cmdline-tools/<ver>/bin,
+          # and occasionally the legacy tools/bin. Try them in order.
+          BIN=""
+          for c in "$SDK"/cmdline-tools/*/bin "$SDK"/cmdline-tools/bin "$SDK"/tools/bin; do
+            if [ -x "$c/sdkmanager" ]; then BIN="$c"; fi
+          done
+          if [ -z "$BIN" ]; then
+            echo "::error::no sdkmanager found under $SDK"
+            ls -la "$SDK" || true
+            exit 1
+          fi
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+          echo "$BIN" >> "$GITHUB_PATH"
+          echo "sdkmanager: $BIN/sdkmanager"
 
-      # F-48: `setup-android` installs the base SDK tools ONLY. This project
-      # needs more than that, and on a clean runner the Gradle sync failed
-      # because the components were never there:
+      # This project needs more than the base SDK:
       #   compileSdk 35            -> platforms;android-35
       #   build-tools for AGP      -> build-tools;35.0.0
       #   ndkVersion 30.0.15729638 -> ndk;30.0.15729638  (the llama.cpp JNI lib)
       #   cmake 4.1.2              -> cmake;4.1.2         (externalNativeBuild)
-      # Installing them explicitly is the fix.
       - name: Install the Android SDK packages this project needs
         shell: bash
         run: |
           set -euo pipefail
-          # Accept the licences FIRST, otherwise sdkmanager blocks on the
-          # "do you accept?" prompt and the step hangs until the job times out.
+          # Accept licences FIRST, otherwise sdkmanager blocks on the prompt.
           yes | sdkmanager --licenses > /dev/null 2>&1 || true
           sdkmanager --install \
             "platform-tools" \
@@ -107,16 +125,24 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Locate the preinstalled Android SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          BIN="$(ls -d "$SDK"/cmdline-tools/*/bin 2>/dev/null | sort -V | tail -1)"
+          test -n "$BIN" || { echo "no cmdline-tools under $SDK"; ls "$SDK"; exit 1; }
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+          echo "$BIN" >> "$GITHUB_PATH"
 
       - name: Install the Android SDK packages this project needs
         shell: bash
