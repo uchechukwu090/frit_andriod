@@ -83,7 +83,13 @@ android {
         debug {
             // Emulator runs x86_64 — keep it for debug only.
             ndk {
-                abiFilters += listOf("arm64-v8a", "x86_64")
+                // F-48: the debug build normally compiles llama.cpp for BOTH
+                // arm64-v8a and x86_64, which doubles the (slow) native build.
+                // CI never runs an emulator, so it narrows the set with
+                // `-PciAbis=arm64-v8a` and finishes in a fraction of the time.
+                val ciAbis = (project.findProperty("ciAbis") as String?)
+                    ?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() }
+                abiFilters += ciAbis ?: listOf("arm64-v8a", "x86_64")
             }
         }
         release {
@@ -135,7 +141,13 @@ android {
 }
 
 tasks.withType<com.android.build.gradle.tasks.ExternalNativeBuildTask> {
-    enabled = file("src/main/jni/CMakeLists.txt").exists()
+    // The native build compiles llama.cpp, which takes ~45 minutes for one ABI
+    // on a fast machine and hours on a CI runner. It is therefore opt-out:
+    //   -PskipNative   -> skip it (fast APK; the on-device model cannot run)
+    //   -PciAbis=...   -> narrow it to one ABI
+    // The Kotlin code and the unit tests do not need the .so, so the normal CI
+    // gate builds without it and the native build is verified separately.
+    enabled = file("src/main/jni/CMakeLists.txt").exists() && !project.hasProperty("skipNative")
 }
 
 dependencies {

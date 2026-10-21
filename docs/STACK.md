@@ -14,9 +14,13 @@
 - **Vision Inference**: OpenRouter `z-ai/glm-5.3-flash` (native multimodal), `gemini-3.6-flash` legacy fallback only, then `mistral-large-latest`.
 - **Speech-to-Text**: Whisper Large V3 via OpenRouter (`OR_STT_MODEL`).
 - **Image**: `bytedance-seed/seedream-5-0-flash` via OpenRouter `/images`; **Video**: `heygen/heygen-video-1` via OpenRouter `/videos`.
-- **Direct image providers** (optional, selected by model slug prefix in `creative/imageProviders.js`):
-  `ideogram/ideogram-v3` (typography specialist, `IDEOGRAM_API_KEY`) and
-  `recraft/recraft-v3` (real fonts via the native `texts[]` field, `RECRAFT_API_KEY`).
+- **One image gateway, no per-provider keys**: every image model is an OpenRouter slug. The served
+  catalogue (`GET /api/v1/images/models`, 61 models) includes the Recraft family
+  (`recraft/recraft-v3` … `recraft/recraft-v4.1-*`); **Ideogram is not served by OpenRouter** and must
+  not be configured as a slug. Craft routing: `OR_TYPE_MODEL=recraft/recraft-v4` (typography),
+  `OR_VECTOR_MODEL=recraft/recraft-v4-vector` (vector). Each model accepts different parameters —
+  Recraft rejects `n`/`output_format` and only takes 1:1 / 4:3 / 3:4 / 16:9 / 9:16 / auto — so the
+  request body is built per model family in `creative/imageProviders.js`.
 - **On-Device Fallback**: Gemma 3n E2B for basic offline intent classification (Android only; server never calls it).
 
 ## Creative Agent (Design Studio + AI Director)
@@ -36,7 +40,8 @@ medium. The rules that make the output professional rather than "AI poster" live
   (`enforceDivergence`), so the same request never returns the same design twice.
 - **Type layer** (`creative/typeLayer.js`): the renderer is asked for a background plate and the
   real type is set from the brief (font, size, weight, tracking, case), fitted to the column and
-  contrast-checked. A typography specialist (Ideogram/Recraft) sets the type itself instead.
+  contrast-checked. Recraft sets the type itself with real fonts, so the layer is skipped for it
+  (`isTypeSpecialist`); every other model gets the layer. Never both, or the copy appears twice.
 - **Director** (`creative/directorAgent.js`): look research → shot plan (with a shot-variety
   guard) → per-shot render → ffmpeg frame extraction (`POST /media/frames` in the sandbox) →
   vision review of the frame → re-render with the reviewer's complaints.

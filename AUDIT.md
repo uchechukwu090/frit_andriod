@@ -558,12 +558,23 @@ measures the Phase-6 performance targets. Two real bugs fell out of it; both are
     shots cannot share a move AND an angle) → per-shot render → **frame extraction**
     (`POST /media/frames` in the sandbox, ffmpeg) → vision review of the FRAME against the shot
     → re-render with the reviewer's complaints. 14 unit tests (`test/directorAgent.test.mjs`).
-  - **Also:** Ideogram v3 + Recraft v3 adapters (`server/src/creative/imageProviders.js`) selected
-    **by model slug prefix** (`ideogram/…`, `recraft/…`), so the existing craft routing lights up
-    with no plumbing; Recraft's `texts[]` carries the brief's real type. 10 unit tests.
+  - **Also:** **one image gateway — OpenRouter only, no per-provider API keys.** The served
+    `/images` catalogue (61 models, checked live) includes the Recraft family
+    (`recraft/recraft-v3` … `recraft/recraft-v4.1-*`) but **NOT Ideogram**, so no `ideogram/…` slug
+    may be configured. Craft routing: `OR_TYPE_MODEL=recraft/recraft-v4`,
+    `OR_VECTOR_MODEL=recraft/recraft-v4-vector`. `creative/imageProviders.js` is now the *model
+    knowledge* module: it builds the request per model family (Recraft **rejects** `n` and
+    `output_format` and only accepts 1:1 / 4:3 / 3:4 / 16:9 / 9:16 / auto, so the generic body is a
+    400 there), decides who sets the type (`isTypeSpecialist` — Recraft renders real fonts itself)
+    and keeps the model chain in ONE class so the prompt always matches the renderer. 9 unit tests.
     Reference transport (`creative/refs.js`: browser-like fetch → origin-side public proxy
     fallback → ≤1024px → content-addressed disk cache) with `GET /creative-suite/refs/:id` so the
     app can SHOW what was studied. 9 unit tests.
+  - **OpenRouter does not forward Recraft's native `texts[]` payload** (verified live: the text
+    never appeared in the render), so the structured-type route is gone and **our type layer is the
+    typography path** for every model except Recraft. The render response now carries `media_type`
+    (Recraft returns webp, Seedream png) and the Android client uses it — it used to hard-code
+    `data:image/png;base64,`, which would have shown nothing for a webp payload.
   - **Live verification:** `scripts/w7_agent_probe.ps1` (a PowerShell port of the Week-6 bash
     probe — WSL bash is not installed on this host) boots a throwaway server, runs the SAME goal
     twice and fails the run if the two repeat each other. Last run: 2/2 delivered, reviews 0.75
@@ -785,17 +796,44 @@ needs it; free-tier sleep fights cold-start UX) — revenue protection for the b
     size per platform, (b) composable filter chains, (c) batch editing. Recorded as the Week 7
     direction, not done here.
 
-- **F-45 ✅ DONE (2026-10-20) — the SANDBOX DOCKER BUILD was broken.**
-  Render reported: `process "/bin/sh -c apt-get update && apt-get install -y --no-install-recommends
-  python3 python3-pip python3-dev build-essential libta-lib-dev ffmpeg fonts-dejavu-core curl git
-  jq sqlite3 poppler-utils imagemagick && rm -rf /var/lib/apt/lists/*" did not complete
-  successfully: exit code: 100`. apt-get exits 100 when a package cannot be found, and
-  `node:20-slim` now resolves to Debian 13 (trixie) where **libta-lib-dev was REMOVED** — one
-  missing package took the whole image down. The Dockerfile now (1) pins the base to
-  `node:20-slim-bookworm` and (2) splits the list: everything FRIT needs is REQUIRED and the
-  TA-Lib headers are OPTIONAL (the PyPI wheel bundles the compiled library), so one unavailable
-  package can no longer fail the build. The pip step was made resilient the same way — TA-Lib is
-  installed on its own so a TA-Lib failure cannot cost the other 16 packages.
+- **F-45 ✅ DONE (2026-10-20) — the SANDBOX DOCKER BUILD was broken.** Two separate failures, both
+  now fixed and verified:
+  1. `apt-get` exited **100**: `libta-lib-dev` does not exist in ANY current Debian suite. Verified
+     against the Debian MADISON API — the binary package has no entry in bookworm, trixie or
+     bullseye (only the runtime `libta-lib0` and the source `ta-lib` are packaged). It is also
+     unnecessary: **TA-Lib 0.8.2 publishes manylinux wheels** (cp311-cp315, x86_64 AND aarch64)
+     that bundle the compiled C library, so pip installs it with no system headers. The package
+     was removed from the Dockerfile and the pip step now installs TA-Lib on its own, so a TA-Lib
+     failure can never cost the other 16 packages the sandbox needs.
+  2. The first fix attempt used the base tag `node:20-slim-bookworm`, which **does not exist** —
+     Node puts the Debian codename BEFORE `-slim`. The build then failed with
+     "failed to resolve source metadata for docker.io/library/node:20-slim-bookworm: not found".
+     The real tag is **`node:20-bookworm-slim`** (bookworm = Debian 12 = Python 3.11, which has
+     the widest wheel coverage for the sandbox's scientific stack).
+  - Every apt package and every pip dependency in the Dockerfile is now checked against the
+    real Debian archive / PyPI, and every RUN command is shell-syntax checked.
+
+- **F-48 ✅ DONE (2026-10-20) — the ANDROID CI WORKFLOW could not build the app.** The
+  workflow ran `setup-android` and then `./gradlew :app:assembleDebug`, but `setup-android`
+  installs the base SDK tools ONLY. This project needs `compileSdk 35`, `ndk 30.0.15729638` and
+  `cmake 4.1.2` (the llama.cpp JNI library), none of which were installed, so the Gradle sync
+  failed on a clean runner. The workflow now installs every component explicitly
+  (`platforms;android-35`, `build-tools;35.0.0`, `ndk;30.0.15729638`, `cmake;4.1.2`) and accepts
+  the SDK licences FIRST — otherwise `sdkmanager` blocks on the "do you accept?" prompt and the
+  step hangs until the job times out.
+  - **The native build is far too slow for CI.** Compiling llama.cpp for one ABI took **43
+    minutes** on this machine, and a 2-core GitHub runner is slower — the debug build normally
+    builds BOTH arm64-v8a and x86_64, i.e. twice that. So:
+    - `build.gradle.kts` gained `-PskipNative` (skip the native build) and `-PciAbis=<list>`
+      (narrow it to one ABI).
+    - The `build-and-test` job (the gate, on every push and PR) builds **without** the native
+      library: **1m 23s**, all 40 unit tests pass. The Kotlin code and the tests do not need
+      the .so.
+    - A separate `native-build` job (240-minute timeout) builds the APK **with** the native
+      library, and only runs on `workflow_dispatch` — i.e. when you ask for it, not on every push.
+  - Verified locally: `:app:assembleDebug :app:testDebugUnitTest -PskipNative -PciAbis=arm64-v8a`
+    → **BUILD SUCCESSFUL in 1m 23s**, `buildCMakeDebug[arm64-v8a] SKIPPED`, 40/40 tests pass.
+    With the native build: **BUILD SUCCESSFUL in 43m 31s**, 134 MB APK (one ABI) vs 234 MB (two).
 
 - **F-46 ✅ DONE (2026-10-20) — the AUTH_TOKEN was rotated.** The live token was published in the
   public `frit-android` repo's history (see the security note above), which the user correctly

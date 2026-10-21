@@ -5,15 +5,20 @@ on:
     branches: [ main, develop ]
   pull_request:
     branches: [ main ]
+  # The full native build takes hours on a CI runner, so it is opt-in.
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
+  # ---------------------------------------------------------------------------
+  # The fast gate: does the app compile, package and pass its unit tests?
+  # The native (llama.cpp) library is skipped - see the native-build job.
+  # ---------------------------------------------------------------------------
   build-and-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -26,6 +31,30 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+
+      # F-48: `setup-android` installs the base SDK tools ONLY. This project
+      # needs more than that, and on a clean runner the Gradle sync failed
+      # because the components were never there:
+      #   compileSdk 35            -> platforms;android-35
+      #   build-tools for AGP      -> build-tools;35.0.0
+      #   ndkVersion 30.0.15729638 -> ndk;30.0.15729638  (the llama.cpp JNI lib)
+      #   cmake 4.1.2              -> cmake;4.1.2         (externalNativeBuild)
+      # Installing them explicitly is the fix.
+      - name: Install the Android SDK packages this project needs
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Accept the licences FIRST, otherwise sdkmanager blocks on the
+          # "do you accept?" prompt and the step hangs until the job times out.
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          sdkmanager --install \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0" \
+            "ndk;30.0.15729638" \
+            "cmake;4.1.2"
+          echo "--- installed components ---"
+          sdkmanager --list_installed | grep -E "android-35|build-tools;35|ndk;30|cmake;4" || true
 
       - name: Cache Gradle
         uses: actions/cache@v4
@@ -41,9 +70,11 @@ jobs:
         working-directory: android
         run: chmod +x gradlew
 
-      - name: Assemble debug APK
+      - name: Assemble debug APK (fast - native library skipped)
         working-directory: android
-        run: ./gradlew :app:assembleDebug --no-daemon
+        # -PskipNative   -> do not compile llama.cpp (hours on a CI runner)
+        # -PciAbis=...   -> one ABI instead of two, when the native build runs
+        run: ./gradlew :app:assembleDebug --no-daemon -PskipNative -PciAbis=arm64-v8a
 
       - name: Run unit tests
         working-directory: android
@@ -61,5 +92,67 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: frit-debug-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------
+  # The slow job: build the APK WITH the llama.cpp native library, so the
+  # on-device local model actually works in the artifact. Compiling llama.cpp
+  # takes hours on a 2-core runner, so this only runs when you ask for it
+  # ("Run workflow" -> Android CI) rather than on every push.
+  # ---------------------------------------------------------------------------
+  native-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    if: github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install the Android SDK packages this project needs
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          sdkmanager --install \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0" \
+            "ndk;30.0.15729638" \
+            "cmake;4.1.2"
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-native-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Grant Gradle wrapper execute permission
+        working-directory: android
+        run: chmod +x gradlew
+
+      - name: Assemble debug APK with the native library
+        working-directory: android
+        # One ABI only: the arm64-v8a build is the one that ships to phones,
+        # and it halves an already very long native compile.
+        run: ./gradlew :app:assembleDebug --no-daemon -PciAbis=arm64-v8a
+
+      - name: Upload the APK with the native library
+        uses: actions/upload-artifact@v4
+        with:
+          name: frit-debug-apk-with-native
           path: android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: ignore
