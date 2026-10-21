@@ -110,8 +110,17 @@ object TradingRepository {
                     val merged = (list + TradingCache.loadSignals())
                         .distinctBy { it.id }.sortedByDescending { it.timestamp }.take(200)
                     TradingCache.saveSignals(merged)
+                    // FIXED BUG (signals only visible offline): the merged list
+                    // was saved to the cache but the SERVER-ONLY list was
+                    // returned. Online the user therefore saw whatever the
+                    // server had (often nothing, because the live feed stores
+                    // under the watchlist owner) while offline the cache
+                    // showed everything. Return the MERGED list so both paths
+                    // agree.
+                    Result.Ok(merged)
+                } else {
+                    Result.Ok(list)
                 }
-                Result.Ok(list)
             } catch (e: Exception) {
                 var cached = TradingCache.loadSignals()
                 if (symbol != null) cached = cached.filter { it.symbol == symbol.uppercase() }
@@ -312,8 +321,15 @@ object TradingRepository {
     // ---------------- Bot-Pair Association ----------------
     suspend fun botPairs(pair: String? = null): Result<List<BotPairConfig>> = withContext(Dispatchers.IO) {
         try {
-            Result.Ok(TradingEngineClient.getBotPairs(pair))
-        } catch (e: Exception) { Result.Err(e.friendly()) }
+            val list = TradingEngineClient.getBotPairs(pair)
+            // Persisted so the assignment survives an app reboot (item 11).
+            if (pair == null) TradingCache.saveBotPairs(list)
+            Result.Ok(list)
+        } catch (e: Exception) {
+            val cached = TradingCache.loadBotPairs()
+            val filtered = if (pair == null) cached else cached.filter { it.pair == pair.uppercase() }
+            if (filtered.isNotEmpty()) Result.Ok(filtered, fromCache = true) else Result.Err(e.friendly())
+        }
     }
 
     suspend fun saveBotPair(botName: String, pair: String, timeframe: String,
@@ -321,13 +337,16 @@ object TradingRepository {
                            minConfidence: Int, maxTradesDay: Int): Result<BotPairConfig> =
         withContext(Dispatchers.IO) {
             try {
-                Result.Ok(TradingEngineClient.saveBotPair(botName, pair, timeframe, tradeEnabled, signalEnabled, minConfidence, maxTradesDay))
+                val item = TradingEngineClient.saveBotPair(botName, pair, timeframe, tradeEnabled, signalEnabled, minConfidence, maxTradesDay)
+                botPairs() // refresh the persisted copy
+                Result.Ok(item)
             } catch (e: Exception) { Result.Err(e.friendly()) }
         }
 
     suspend fun removeBotPair(botName: String, pair: String): Result<Unit> = withContext(Dispatchers.IO) {
         try {
             TradingEngineClient.removeBotPair(botName, pair)
+            botPairs() // refresh the persisted copy
             Result.Ok(Unit)
         } catch (e: Exception) { Result.Err(e.friendly()) }
     }
@@ -336,6 +355,55 @@ object TradingRepository {
     suspend fun notifications(limit: Int = 50): Result<List<BotNotification>> = withContext(Dispatchers.IO) {
         try {
             Result.Ok(TradingEngineClient.getNotifications(limit))
+        } catch (e: Exception) { Result.Err(e.friendly()) }
+    }
+
+    // ---------------- Trading account (balance / risk / creds) ----------------
+    suspend fun account(): Result<TradingAccount> = withContext(Dispatchers.IO) {
+        try {
+            val acc = TradingEngineClient.getAccount()
+            TradingCache.saveAccount(acc)
+            Result.Ok(acc)
+        } catch (e: Exception) {
+            val cached = TradingCache.loadAccount()
+            if (cached != null) Result.Ok(cached, fromCache = true) else Result.Err(e.friendly())
+        }
+    }
+
+    suspend fun saveAccount(
+        balance: Double? = null,
+        riskProfile: String? = null,
+        derivToken: String? = null,
+        derivTokenMode: String? = null,
+        mt5Server: String? = null,
+        mt5Login: String? = null,
+        mt5Password: String? = null,
+        mt5Broker: String? = null
+    ): Result<TradingAccount> = withContext(Dispatchers.IO) {
+        try {
+            val acc = TradingEngineClient.saveAccount(
+                balance, riskProfile, derivToken, derivTokenMode,
+                mt5Server, mt5Login, mt5Password, mt5Broker
+            )
+            TradingCache.saveAccount(acc)
+            Result.Ok(acc)
+        } catch (e: Exception) { Result.Err(e.friendly()) }
+    }
+
+    /** Recompute the balance from the ledger (item 6). */
+    suspend fun regenerateBalance(baseBalance: Double? = null): Result<Double> = withContext(Dispatchers.IO) {
+        try {
+            val r = TradingEngineClient.regenerateBalance(baseBalance)
+            val acc = TradingEngineClient.getAccount()
+            TradingCache.saveAccount(acc)
+            Result.Ok(r.optDouble("newBalance", acc.balance))
+        } catch (e: Exception) { Result.Err(e.friendly()) }
+    }
+
+    // ---------------- Unified paper portfolio (item 10) ----------------
+    suspend fun paperPortfolio(): Result<TradingEngineClient.PaperPortfolio> = withContext(Dispatchers.IO) {
+        try {
+            Result.Ok(TradingEngineClient.paperPortfolio())
         } catch (e: Exception) { Result.Err(e.friendly()) }
     }
 

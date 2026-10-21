@@ -91,6 +91,26 @@ class TradingScanReceiver : BroadcastReceiver() {
                     }
                     TradingCache.putJson("seen_options_ids", seenOpt.toList().takeLast(300).joinToString(","))
                 } catch (_: Exception) { }
+                // 2b. BOT SIGNALS — every bot the user assigned to a pair, tagged
+                // by the bot's name. This is the push half of the in-app
+                // signal bar: the user learns about a bot firing even when
+                // the app is closed.
+                try {
+                    val seenBots = (TradingCache.getJson("seen_bot_notification_ids") ?: "").split(",").toMutableSet()
+                    when (val r = TradingRepository.notifications(40)) {
+                        is TradingRepository.Result.Ok -> {
+                            r.value.filter { n ->
+                                n.type == "bot_signal" && seenBots.add(n.id)
+                            }.forEach { n ->
+                                SignalNotificationManager.botSignal(
+                                    ctx, n.bot, n.symbol, n.decision, n.confidence
+                                )
+                            }
+                        }
+                        is TradingRepository.Result.Err -> { /* offline: keep quiet */ }
+                    }
+                    TradingCache.putJson("seen_bot_notification_ids", seenBots.toList().takeLast(300).joinToString(","))
+                } catch (_: Exception) { }
                 // 3. TP/SL/entry touches on recent actionable signals
                 val open = TradingCache.loadSignals()
                     .filter { it.decision.name == "BUY" || it.decision.name == "SELL" }

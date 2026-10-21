@@ -643,6 +643,10 @@ object NetworkClient {
      * (layout, alignment, palette, fonts/sizes, elements, background) -> render
      * -> verify the render against the brief. Long-running (10-90s), which the
      * shared 150s read timeout covers. Returns the whole trail, not just an image.
+     *
+     * Week 7: `seed` pins the run (the query style token, the reference order
+     * and the art direction all derive from it) so the same seed reproduces
+     * the same design and a new seed never repeats an old one.
      */
     suspend fun designAgent(
         goal: String,
@@ -655,6 +659,8 @@ object NetworkClient {
         font: String? = null,
         inspiration: Boolean = true,
         verify: Boolean = true,
+        seed: Int? = null,
+        typeLayer: Boolean = true,
     ): String = post("/creative-suite/design/agent", JSONObject().apply {
         put("goal", goal)
         if (headline != null) put("headline", headline)
@@ -666,6 +672,8 @@ object NetworkClient {
         if (font != null) put("font", font)
         put("inspiration", inspiration)
         put("verify", verify)
+        put("type_layer", typeLayer)
+        if (seed != null) put("seed", seed)
     }.toString())
 
     suspend fun editVideoOps(video: String?, audio: String?, subtitles: JSONArray?, clips: JSONArray?, operations: JSONArray): String =

@@ -323,7 +323,8 @@ object TradingEngineClient {
     suspend fun feedStatus(): JSONObject = get("/api/trading/feed/status")
 
     // ---------------- Unified paper portfolio (every bot, bot-tagged) ----------------
-    suspend fun paperPortfolio(): JSONObject = get("/api/trading/paper-portfolio")
+    // Raw JSON accessor; the typed `paperPortfolio()` below parses it.
+    suspend fun paperPortfolioJson(): JSONObject = get("/api/trading/paper-portfolio")
 
     // ---------------- Bots registry (server monitors saved+enabled bots) ----------------
     suspend fun getBots(): List<BotConfig> {
@@ -437,6 +438,7 @@ object TradingEngineClient {
         res.optJSONArray("notifications")?.let { arr ->
             for (i in 0 until arr.length()) {
                 val o = arr.optJSONObject(i) ?: continue
+                val d = o.optJSONObject("detail")
                 out += BotNotification(
                     id = o.optString("id", ""),
                     bot = o.optString("bot", ""),
@@ -446,11 +448,104 @@ object TradingEngineClient {
                     confidence = o.optInt("confidence", 0),
                     note = o.optString("note", ""),
                     timestamp = o.optLong("timestamp", 0),
-                    read = o.optBoolean("read", false)
+                    read = o.optBoolean("read", false),
+                    mine = o.optBoolean("mine", false),
+                    detail = d?.let {
+                        TradeDetail(
+                            entry = it.optDouble("entry", 0.0),
+                            sl = it.optDouble("sl", 0.0),
+                            tp1 = it.optDouble("tp1", 0.0),
+                            tp2 = it.optDouble("tp2", 0.0),
+                            rr = it.optDouble("rr", 0.0),
+                            scenario = it.optString("scenario", ""),
+                            reasoning = it.optString("reasoning", ""),
+                            lotSize = if (it.has("lotSize") && !it.isNull("lotSize")) it.optDouble("lotSize") else null,
+                            lotReason = it.optString("lotReason", "").ifBlank { null },
+                            riskUsd = if (it.has("riskUsd") && !it.isNull("riskUsd")) it.optDouble("riskUsd") else null
+                        )
+                    }
                 )
             }
         }
         return out
+    }
+
+    // ---------------- Trading account (balance / risk / broker creds) ----------------
+    suspend fun getAccount(): TradingAccount {
+        val res = get("/api/trading/account")
+        val o = res.optJSONObject("account") ?: return TradingAccount()
+        return TradingAccount(
+            userId = o.optString("userId", ""),
+            balance = o.optDouble("balance", 1000.0),
+            riskProfile = o.optString("riskProfile", "MODERATE"),
+            hasDerivToken = o.optBoolean("hasDerivToken", false),
+            derivTokenMode = o.optString("derivTokenMode", "platform"),
+            hasMt5 = o.optBoolean("hasMt5", false),
+            mt5Server = o.optString("mt5Server", "").ifBlank { null },
+            mt5Login = o.optString("mt5Login", "").ifBlank { null },
+            mt5Broker = o.optString("mt5Broker", "").ifBlank { null }
+        )
+    }
+
+    suspend fun saveAccount(
+        balance: Double? = null,
+        riskProfile: String? = null,
+        derivToken: String? = null,
+        derivTokenMode: String? = null,
+        mt5Server: String? = null,
+        mt5Login: String? = null,
+        mt5Password: String? = null,
+        mt5Broker: String? = null
+    ): TradingAccount {
+        val body = JSONObject()
+        if (balance != null) body.put("balance", balance)
+        if (riskProfile != null) body.put("riskProfile", riskProfile)
+        if (derivToken != null) body.put("derivToken", derivToken)
+        if (derivTokenMode != null) body.put("derivTokenMode", derivTokenMode)
+        if (mt5Server != null) body.put("mt5Server", mt5Server)
+        if (mt5Login != null) body.put("mt5Login", mt5Login)
+        if (mt5Password != null) body.put("mt5Password", mt5Password)
+        if (mt5Broker != null) body.put("mt5Broker", mt5Broker)
+        val res = post("/api/trading/account", body)
+        val o = res.optJSONObject("account") ?: return getAccount()
+        return TradingAccount(
+            userId = o.optString("userId", ""),
+            balance = o.optDouble("balance", 1000.0),
+            riskProfile = o.optString("riskProfile", "MODERATE"),
+            hasDerivToken = o.optBoolean("hasDerivToken", false),
+            derivTokenMode = o.optString("derivTokenMode", "platform"),
+            hasMt5 = o.optBoolean("hasMt5", false),
+            mt5Server = o.optString("mt5Server", "").ifBlank { null },
+            mt5Login = o.optString("mt5Login", "").ifBlank { null },
+            mt5Broker = o.optString("mt5Broker", "").ifBlank { null }
+        )
+    }
+
+    /** Regenerate the account balance from the ledger (item 6). */
+    suspend fun regenerateBalance(baseBalance: Double? = null): JSONObject {
+        val body = JSONObject()
+        if (baseBalance != null) body.put("baseBalance", baseBalance)
+        return post("/api/trading/portfolio/regenerate", body)
+    }
+
+    /** Kelly-based lot size for a setup (item 9). */
+    suspend fun lotSize(symbol: String, entry: Double, sl: Double, tp: Double, rr: Double, confidence: Int): LotSizeAdvice {
+        val res = post("/api/trading/lot-size", JSONObject()
+            .put("symbol", symbol.uppercase())
+            .put("entry", entry).put("sl", sl).put("tp", tp)
+            .put("rr", rr).put("confidence", confidence))
+        val o = res.optJSONObject("sizing") ?: return LotSizeAdvice()
+        return LotSizeAdvice(
+            lotSize = o.optDouble("lotSize", 0.0),
+            riskUsd = o.optDouble("riskUsd", 0.0),
+            fraction = o.optDouble("fraction", 0.0),
+            kelly = o.optDouble("kelly", 0.0),
+            riskProfile = o.optString("riskProfile", "MODERATE"),
+            plannedRr = o.optDouble("plannedRr", 0.0),
+            balance = o.optDouble("balance", 0.0),
+            basis = o.optString("basis", ""),
+            reason = o.optString("reason", "")
+        )
     }
 
     // ---------------- Options suite (signal-only, never executes) ----------------
@@ -609,7 +704,13 @@ object TradingEngineClient {
             },
             timestamp = optLong("timestamp", System.currentTimeMillis()),
             isFavorite = optInt("is_favorite", if (optBoolean("isFavorite", false)) 1 else 0) == 1,
-            isRead = optInt("is_read", if (optBoolean("isRead", false)) 1 else 0) == 1
+            isRead = optInt("is_read", if (optBoolean("isRead", false)) 1 else 0) == 1,
+            botSource = optString("bot_source", optString("botSource", "engine")).ifBlank { "engine" },
+            lotSize = if (has("lot_size") && !isNull("lot_size")) optDouble("lot_size") else null,
+            lotReason = optString("lot_reason", optString("lotReason", "")).ifBlank { null },
+            riskUsd = if (has("risk_usd") && !isNull("risk_usd")) optDouble("risk_usd") else null,
+            balance = if (has("balance") && !isNull("balance")) optDouble("balance") else null,
+            riskProfile = optString("risk_profile", optString("riskProfile", "")).ifBlank { null }
         )
     }
 
@@ -634,6 +735,75 @@ object TradingEngineClient {
             )
         }
         return out
+    }
+
+    // ---------------- Unified paper portfolio (item 10) ----------------
+    data class PaperPortfolio(
+        val trades: List<PaperTrade>,
+        val byBot: Map<String, BotPerformance>,
+        val total: Int,
+        val totalPnlUsd: Double,
+        val balance: Double,
+        val equity: Double,
+        val account: TradingAccount?
+    )
+
+    suspend fun paperPortfolio(): PaperPortfolio {
+        val res = get("/api/trading/paper-portfolio")
+        val trades = mutableListOf<PaperTrade>()
+        res.optJSONArray("trades")?.let { arr ->
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                trades += PaperTrade(
+                    bot = o.optString("bot", "manual"),
+                    source = o.optString("source", ""),
+                    symbol = o.optString("symbol", ""),
+                    side = o.optString("side", ""),
+                    entry = o.optDouble("entry", 0.0),
+                    exit = o.optDouble("exit", 0.0),
+                    pnl = o.optDouble("pnl", 0.0),
+                    pnlKind = o.optString("pnlKind", "usd"),
+                    status = o.optString("status", ""),
+                    openedAt = o.optLong("openedAt", 0),
+                    closedAt = o.optLong("closedAt", Long.MIN_VALUE).takeIf { it != Long.MIN_VALUE },
+                    note = o.optString("note", "")
+                )
+            }
+        }
+        val byBot = mutableMapOf<String, BotPerformance>()
+        res.optJSONObject("byBot")?.let { o ->
+            for (k in o.keys()) {
+                val b = o.optJSONObject(k) ?: continue
+                byBot[k] = BotPerformance(
+                    bot = k,
+                    trades = b.optInt("trades", 0),
+                    wins = b.optInt("wins", 0),
+                    losses = b.optInt("losses", 0),
+                    open = b.optInt("open", 0),
+                    winRate = if (b.has("winRate") && !b.isNull("winRate")) b.optDouble("winRate") else null,
+                    pnlUsd = b.optDouble("pnlUsd", 0.0),
+                    pnlUnits = b.optDouble("pnlUnits", 0.0)
+                )
+            }
+        }
+        return PaperPortfolio(
+            trades = trades,
+            byBot = byBot,
+            total = res.optInt("total", trades.size),
+            totalPnlUsd = res.optDouble("totalPnlUsd", 0.0),
+            balance = res.optDouble("balance", 1000.0),
+            equity = res.optDouble("equity", 1000.0),
+            account = res.optJSONObject("account")?.let {
+                TradingAccount(
+                    userId = it.optString("userId", ""),
+                    balance = it.optDouble("balance", 1000.0),
+                    riskProfile = it.optString("riskProfile", "MODERATE"),
+                    hasDerivToken = it.optBoolean("hasDerivToken", false),
+                    derivTokenMode = it.optString("derivTokenMode", "platform"),
+                    hasMt5 = it.optBoolean("hasMt5", false)
+                )
+            }
+        )
     }
 }
 

@@ -33,7 +33,8 @@ private data class DirectorShot(
     val kind: String,
     val ok: Boolean,
     val url: String?,
-    val error: String?
+    val error: String?,
+    val verdict: String = ""
 )
 
 @Composable
@@ -141,8 +142,23 @@ fun DirectorScreen(
                                 return@launch
                             }
                             val arr = r.optJSONArray("shots") ?: JSONArray()
+                            val vArr = r.optJSONArray("verification")
                             shots = (0 until arr.length()).map { i ->
                                 val s = arr.getJSONObject(i)
+                                // Week 7: each shot now carries the frame
+                                // review — the agent looked at what it rendered.
+                                val v = vArr?.optJSONObject(i)
+                                val verdict = when {
+                                    v == null -> ""
+                                    v.optBoolean("checked", false) && v.optBoolean("pass") ->
+                                        "frame review PASS ${(v.optDouble("score", 0.0) * 100).toInt()}%"
+                                    v.optBoolean("checked", false) ->
+                                        "frame review ${(v.optDouble("score", 0.0) * 100).toInt()}% — " +
+                                            (0 until (v.optJSONArray("issues")?.length() ?: 0)).joinToString("; ") {
+                                                v.optJSONArray("issues")?.optString(it).orEmpty()
+                                            }
+                                    else -> "frame review not run"
+                                }
                                 DirectorShot(
                                     s.optInt("index", i + 1),
                                     s.optString("description", ""),
@@ -150,7 +166,8 @@ fun DirectorScreen(
                                     s.optString("kind", "image"),
                                     s.optBoolean("ok", false),
                                     s.optString("image_url").ifBlank { null } ?: s.optString("url").ifBlank { null },
-                                    s.optString("error").ifBlank { null }
+                                    s.optString("error").ifBlank { null },
+                                    verdict
                                 )
                             }
                             status = "Generating ${shots.size} shots…"
@@ -193,6 +210,9 @@ fun DirectorScreen(
                                 Column(Modifier.weight(1f)) {
                                     Text("Shot ${shot.index} • ${shot.kind}", style = MaterialTheme.typography.labelMedium)
                                     Text(shot.description, style = MaterialTheme.typography.bodySmall, maxLines = 2)
+                                    if (shot.verdict.isNotBlank()) {
+                                        Text(shot.verdict, style = MaterialTheme.typography.labelSmall)
+                                    }
                                 }
                             }
                         }

@@ -160,6 +160,74 @@ object TradingCache {
     fun saveScanIntervalMin(v: Int) { putLong("scan_interval_min", v.toLong()) }
     fun loadScanIntervalMin(): Int = getLong("scan_interval_min", 30).toInt().coerceIn(15, 480)
 
+    // ---- trading account (balance / risk profile / broker creds) ----
+    // Persisted so the balance the user typed survives an app reboot even
+    // when the server is unreachable (offline mode).
+    fun saveAccount(a: TradingAccount) {
+        putJson("trading_account", JSONObject()
+            .put("userId", a.userId)
+            .put("balance", a.balance)
+            .put("riskProfile", a.riskProfile)
+            .put("hasDerivToken", a.hasDerivToken)
+            .put("derivTokenMode", a.derivTokenMode)
+            .put("hasMt5", a.hasMt5)
+            .put("mt5Server", a.mt5Server ?: "")
+            .put("mt5Login", a.mt5Login ?: "")
+            .put("mt5Broker", a.mt5Broker ?: "")
+            .toString())
+    }
+
+    fun loadAccount(): TradingAccount? {
+        val o = runCatching { JSONObject(getJson("trading_account") ?: "") }.getOrNull() ?: return null
+        return TradingAccount(
+            userId = o.optString("userId", ""),
+            balance = o.optDouble("balance", 1000.0),
+            riskProfile = o.optString("riskProfile", "MODERATE"),
+            hasDerivToken = o.optBoolean("hasDerivToken", false),
+            derivTokenMode = o.optString("derivTokenMode", "platform"),
+            hasMt5 = o.optBoolean("hasMt5", false),
+            mt5Server = o.optString("mt5Server", "").ifBlank { null },
+            mt5Login = o.optString("mt5Login", "").ifBlank { null },
+            mt5Broker = o.optString("mt5Broker", "").ifBlank { null }
+        )
+    }
+
+    // ---- bot-pair association (persisted across reboot) ----
+    fun saveBotPairs(items: List<BotPairConfig>) {
+        val arr = JSONArray()
+        items.forEach { p ->
+            arr.put(JSONObject()
+                .put("id", p.id)
+                .put("botName", p.botName)
+                .put("pair", p.pair)
+                .put("timeframe", p.timeframe)
+                .put("tradeEnabled", p.tradeEnabled)
+                .put("signalEnabled", p.signalEnabled)
+                .put("minConfidence", p.minConfidence)
+                .put("maxTradesDay", p.maxTradesDay))
+        }
+        putJson("bot_pairs", arr.toString())
+    }
+
+    fun loadBotPairs(): List<BotPairConfig> {
+        val arr = runCatching { JSONArray(getJson("bot_pairs") ?: "[]") }.getOrNull() ?: return emptyList()
+        val out = mutableListOf<BotPairConfig>()
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            out += BotPairConfig(
+                id = o.optLong("id", 0),
+                botName = o.optString("botName", ""),
+                pair = o.optString("pair", ""),
+                timeframe = o.optString("timeframe", ""),
+                tradeEnabled = o.optBoolean("tradeEnabled", false),
+                signalEnabled = o.optBoolean("signalEnabled", true),
+                minConfidence = o.optInt("minConfidence", 60),
+                maxTradesDay = o.optInt("maxTradesDay", 2)
+            )
+        }
+        return out
+    }
+
     // ---- local JSON <-> model for signals (mirrors server shape) ----
     private fun signalToJson(s: TradingSignal): JSONObject = JSONObject()
         .put("id", s.id).put("symbol", s.symbol).put("decision", s.decision.name)
@@ -167,6 +235,12 @@ object TradingCache {
         .put("tp1", s.tp1).put("tp2", s.tp2).put("rr", s.rr)
         .put("scenario", s.scenario.name).put("reasoning", s.reasoning)
         .put("timestamp", s.timestamp)
+        .put("bot_source", s.botSource)
+        .put("lot_size", s.lotSize ?: JSONObject.NULL)
+        .put("lot_reason", s.lotReason ?: "")
+        .put("risk_usd", s.riskUsd ?: JSONObject.NULL)
+        .put("balance", s.balance ?: JSONObject.NULL)
+        .put("risk_profile", s.riskProfile ?: "")
         .put("is_favorite", if (s.isFavorite) 1 else 0)
         .put("is_read", if (s.isRead) 1 else 0)
 

@@ -1013,7 +1013,11 @@ fun MainScreen(
             showTrading -> {
                 com.frit.app.ui.trading.TradingSuiteScreen(
                     onClose = { tradingTab = null; goBack() },
-                    initialTab = tradingTab
+                    initialTab = tradingTab,
+                    // Tier-gate deep-link: the trading suite sends the user
+                    // here to subscribe when a bot/watchlist action needs a
+                    // paid plan.
+                    onOpenWallet = { pushNav("wallet"); showWallet = true; showTrading = false }
                 )
             }
             showCreativeSuite -> {

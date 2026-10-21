@@ -57,6 +57,10 @@ fun DesignStudioScreen(onClose: () -> Unit = {}, onHandoff: (String) -> Unit = {
     var agentMode by remember { mutableStateOf(false) }
     var briefLines by remember { mutableStateOf("") }
     var verifyLine by remember { mutableStateOf("") }
+    // Week 7 — the trail: which references were studied, the style route the
+    // agent took, and how far it pushed the brief away from the references.
+    var studiedRefs by remember { mutableStateOf<List<String>>(emptyList()) }
+    var agentTrail by remember { mutableStateOf("") }
 
     LaunchedEffect(Unit) {
         engine.takeHandoff()?.let { (m, k) ->
@@ -254,11 +258,26 @@ fun DesignStudioScreen(onClose: () -> Unit = {}, onHandoff: (String) -> Unit = {
                 style = MaterialTheme.typography.labelSmall
             )
             if (briefLines.isNotBlank()) Text(briefLines, style = MaterialTheme.typography.labelSmall)
+            if (agentTrail.isNotBlank()) Text(agentTrail, style = MaterialTheme.typography.labelSmall)
+            if (studiedRefs.isNotEmpty()) {
+                Text("References studied", style = MaterialTheme.typography.labelSmall)
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    studiedRefs.forEach { u ->
+                        coil.compose.AsyncImage(
+                            model = u,
+                            contentDescription = "inspiration reference",
+                            modifier = Modifier.size(56.dp),
+                            contentScale = androidx.compose.ui.layout.ContentScale.Crop
+                        )
+                    }
+                }
+            }
             if (verifyLine.isNotBlank()) Text(verifyLine, style = MaterialTheme.typography.labelSmall)
             Button(
                 onClick = {
                     scope.launch(Dispatchers.IO) {
                         busy = true; results = emptyList(); briefLines = ""; verifyLine = ""
+                        studiedRefs = emptyList(); agentTrail = ""
                         if (agentMode) {
                             try {
                                 val goalText = (if (useCustomBrief) customBrief else headline).ifBlank { "graphic design" }
@@ -297,6 +316,23 @@ fun DesignStudioScreen(onClose: () -> Unit = {}, onHandoff: (String) -> Unit = {
                                         }
                                     }
                                     append("References read: $refsRead")
+                                }.trim()
+                                // Week 7 trail: the style route, the divergence
+                                // from the references and the reference images.
+                                val insp = r.optJSONObject("inspiration")
+                                val studied = insp?.optJSONArray("studied")
+                                studiedRefs = (0 until (studied?.length() ?: 0)).mapNotNull { i ->
+                                    studied?.optJSONObject(i)?.optString("image_url")?.takeIf { it.isNotBlank() }
+                                }
+                                val div = r.optJSONObject("divergence")?.optJSONArray("changed")
+                                val divText = (0 until (div?.length() ?: 0)).joinToString(", ") { div?.optString(it).orEmpty() }
+                                agentTrail = buildString {
+                                    append("Style route: ${r.optString("style_token").ifBlank { "—" }}")
+                                    append("  •  Seed ${r.optInt("seed")}")
+                                    if (r.optJSONObject("render")?.optBoolean("type_layer") == true) {
+                                        append("\nType layer: real typography set from the brief")
+                                    }
+                                    if (divText.isNotBlank()) append("\nPushed away from the references: $divText")
                                 }.trim()
                                 val rr = r.optJSONObject("render")
                                 val src = rr?.optString("image_url").orEmpty().ifBlank { rr?.optString("image_b64").orEmpty() }

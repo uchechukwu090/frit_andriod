@@ -41,11 +41,19 @@ data class TradingSignal(
     val costs: CostAnalysis? = null,
     val timestamp: Long = System.currentTimeMillis(),
     val isFavorite: Boolean = false,
-    val isRead: Boolean = false
+    val isRead: Boolean = false,
+    // Which engine/bot produced it — the notification bar tags by this.
+    val botSource: String = "engine",
+    // Kelly-based lot-size recommendation (item 9).
+    val lotSize: Double? = null,
+    val lotReason: String? = null,
+    val riskUsd: Double? = null,
+    val balance: Double? = null,
+    val riskProfile: String? = null
 ) : Parcelable
 
 enum class SignalDecision {
-    BUY, SELL, WAIT, WAIT_PULLBACK, WAIT_RANGE, NO_TRADE, DATA_UNAVAILABLE
+    BUY, SELL, CALL, PUT, WAIT, WAIT_PULLBACK, WAIT_RANGE, NO_TRADE, DATA_UNAVAILABLE
 }
 
 enum class SignalScenario {
@@ -270,7 +278,94 @@ data class BotNotification(
     val confidence: Int,
     val note: String,
     val timestamp: Long,
-    val read: Boolean = false
+    val read: Boolean = false,
+    val mine: Boolean = false,
+    val detail: TradeDetail? = null
+) : Parcelable
+
+/**
+ * Full trade detail behind a notification — shown when the user taps it.
+ */
+@Parcelize
+data class TradeDetail(
+    val entry: Double = 0.0,
+    val sl: Double = 0.0,
+    val tp1: Double = 0.0,
+    val tp2: Double = 0.0,
+    val rr: Double = 0.0,
+    val scenario: String = "",
+    val reasoning: String = "",
+    val lotSize: Double? = null,
+    val lotReason: String? = null,
+    val riskUsd: Double? = null
+) : Parcelable
+
+/**
+ * The user's trading account (server /api/trading/account): the balance they
+ * actually trade on, their declared risk profile, and their own broker
+ * credentials for users who want the bot to trade THEIR account.
+ */
+@Parcelize
+data class TradingAccount(
+    val userId: String = "",
+    val balance: Double = 1000.0,
+    val riskProfile: String = "MODERATE",
+    val hasDerivToken: Boolean = false,
+    val derivTokenMode: String = "platform",
+    val hasMt5: Boolean = false,
+    val mt5Server: String? = null,
+    val mt5Login: String? = null,
+    val mt5Broker: String? = null
+) : Parcelable
+
+/**
+ * Kelly-based lot-size recommendation for a setup.
+ */
+@Parcelize
+data class LotSizeAdvice(
+    val lotSize: Double = 0.0,
+    val riskUsd: Double = 0.0,
+    val fraction: Double = 0.0,
+    val kelly: Double = 0.0,
+    val riskProfile: String = "MODERATE",
+    val plannedRr: Double = 0.0,
+    val balance: Double = 0.0,
+    val basis: String = "",
+    val reason: String = ""
+) : Parcelable
+
+/**
+ * One row of the unified paper portfolio: any engine, any bot, any rail.
+ */
+@Parcelize
+data class PaperTrade(
+    val bot: String,
+    val source: String,
+    val symbol: String,
+    val side: String,
+    val entry: Double,
+    val exit: Double,
+    val pnl: Double,
+    val pnlKind: String,
+    val status: String,
+    val openedAt: Long,
+    val closedAt: Long?,
+    val note: String
+) : Parcelable
+
+/**
+ * Per-bot performance summary for the portfolio tab.
+ */
+@Parcelize
+data class BotPerformance(
+    val bot: String,
+    val trades: Int = 0,
+    val wins: Int = 0,
+    val losses: Int = 0,
+    val open: Int = 0,
+    val winRate: Double? = null,
+    val pnlUsd: Double = 0.0,
+    val pnlUnits: Double = 0.0
 ) : Parcelable
 
 /**

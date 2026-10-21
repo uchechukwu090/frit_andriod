@@ -70,10 +70,19 @@ object SignalNotificationManager {
     fun signalConfirmed(ctx: Context, s: TradingSignal) {
         val prefs = TradingCache.loadNotifPrefs()
         if (!prefs.signalAlerts) return
-        val dir = if (s.decision.name == "BUY") "BUY" else "SELL"
+        val dir = when (s.decision.name) {
+            "BUY", "CALL" -> "BUY"
+            "SELL", "PUT" -> "SELL"
+            else -> s.decision.name
+        }
+        // Tag the notification with the engine/bot that produced it, and
+        // include the Kelly lot size so the user knows the size before
+        // opening the app.
+        val tag = s.botSource.uppercase()
+        val lot = s.lotSize?.takeIf { it > 0 }?.let { " · ${"%.2f".format(it)} lot" } ?: ""
         post(ctx, CH_SIGNAL, ("sig" + s.id).hashCode(),
-            "$dir ${s.symbol} @ ${fmt(s.entry)}",
-            "Conf ${s.confidence}% · SL ${fmt(s.sl)} · TP1 ${fmt(s.tp1)} · TP2 ${fmt(s.tp2)} · R:R ${s.rr}",
+            "[$tag] $dir ${s.symbol} @ ${fmt(s.entry)}",
+            "Conf ${s.confidence}% · SL ${fmt(s.sl)} · TP1 ${fmt(s.tp1)} · TP2 ${fmt(s.tp2)} · R:R ${s.rr}$lot",
             "signals")
     }
 
@@ -95,6 +104,27 @@ object SignalNotificationManager {
         val prefs = TradingCache.loadNotifPrefs()
         if (!prefs.dailySummary) return
         post(ctx, CH_SUMMARY, 9001, "Trading day summary", text, "dashboard")
+    }
+
+    /**
+     * A bot fired a signal. Tagged with the bot's name so the user can see
+     * WHICH bot is talking (scalping / pocket / intraday / long-term) without
+     * opening the app.
+     */
+    fun botSignal(ctx: Context, bot: String, symbol: String, decision: String,
+                  confidence: Int, timeframe: String = "", lotSize: Double? = null) {
+        val prefs = TradingCache.loadNotifPrefs()
+        if (!prefs.signalAlerts) return
+        val dir = when (decision.uppercase()) {
+            "BUY", "CALL" -> "BUY"
+            "SELL", "PUT" -> "SELL"
+            else -> decision.uppercase()
+        }
+        val lot = lotSize?.takeIf { it > 0 }?.let { " · ${"%.2f".format(it)} lot" } ?: ""
+        post(ctx, CH_SIGNAL, ("bot" + bot + symbol + decision).hashCode(),
+            "[${bot.uppercase()}] $dir $symbol",
+            "Conf $confidence%${if (timeframe.isNotBlank()) " · $timeframe" else ""}$lot",
+            "signals")
     }
 
     /**
