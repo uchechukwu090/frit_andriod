@@ -496,6 +496,60 @@ measures the Phase-6 performance targets. Two real bugs fell out of it; both are
   **model chain** (graphics → image) so a retired slug can never kill a finished brief again.
   Ops note: any deployment still overriding `OR_DESIGN_MODEL`/`OR_GRAPHICS_MODEL` via env or
   the Creator console should be re-pointed at a served slug.
+- **F-50 ✅ DONE (2026-10-20) — a REAL MONEY BUG: the per-trade risk cap was effectively OFF on
+  every Deriv/Alpaca order.** Found by the new F-07 tests.
+  `riskGate()` in index.js did not destructure `riskUsdOverride`, so it was **silently dropped**.
+  Every caller (deriv, alpaca, the pocket bot) carefully computes the real dollar risk of the
+  order it is about to place and passes it in — and it was thrown away. `check()` then fell back
+  to the pip-table math with `lotSize: 0`, i.e. it priced the risk of a **default 0.01 lot**
+  instead of the actual position, so the cap was computed against a fraction of the real risk.
+  Three fixes:
+  1. `riskGate()` now forwards `riskUsdOverride` (one line, index.js:3813).
+  2. `risk.js` compares the **raw** percentage against the cap, not the 2-decimal **rounded** one.
+     A $20.04 risk on a $1000 book (2.004%) rounded to 2.00 and sailed under a 2% cap. An epsilon
+     keeps a trade that is EXACTLY at the cap inside it (20/1000*100 is 2.0000000000000004).
+  3. When the risk **cannot be priced at all** (no pip row for the symbol, or a missing/equal
+     stop) the per-trade cap was silently SKIPPED, so the trade went through with no size
+     limit. It now BLOCKS — the same fail-closed policy the F-04 fix applied to internal errors.
+  A source guard in `test/streamRegression.test.mjs` pins the wiring (index.js is a 9,000-line
+  module with import-time side effects, so it cannot be unit tested directly); the guard is
+  mutation-verified.
+  Two more found in `options/structures.js`: `creditSpread` never checked `maxLoss > 0` (unlike
+  `ironCondor`), so a credit wider than the strike width returned `maxLoss: -1.5` and
+  `maxLossDollars: -150` — a "risk −$150" signal; and `netCredit` used a NEGATIVE per-contract
+  fee as-is, so fees *increased* the net credit and the gate said "ok: true". `probProfit` also now
+  validates `breakeven` (a missing one returned NaN, which compares false against everything, so a
+  caller reading `p > 0` saw "no edge" instead of "no data").
+  **Left alone on purpose:** `structures.js`'s iron-condor legs carry `mid: 0` on the call wing, so
+  anything summing `leg.mid` would under-read the premium. Nothing does today (`netCredit` uses
+  `legs.length`), so changing live premium accounting was not worth the risk.
+- **F-08 ✅ CLOSED (2026-10-20, second pass).** The remaining server-side half is swept.
+  `scripts/js_catch_audit.js` reports **0 EMPTY catches** across all 50 server JS files (an empty
+  catch is the dangerous kind — a failure nobody can debug later) and 19 SILENT ones. Every SILENT
+  catch was read: **19 of 19 hand the error back to the caller** (`return { error: e.message }`,
+  `setStatus("down", e.message)`, `failures.push(...)`, `resolve(false)`), which is correct — the
+  error reaches the API response, the journal or the ledger. The four places that genuinely
+  dropped an error now log it (weather lookup, chat-router fallback, provider retry, storyboard
+  retry).
+  **Re-run it (1 second) after any server catch change:** `node scripts/js_catch_audit.js server/src`
+- **F-07 ✅ CLOSED (2026-10-20, second pass).** The last uncovered strategy modules are tested:
+  `server/test/strategyLast.test.mjs` (**88 tests**) covers `options/structures.js` (all 7
+  exports — the module that had NO coverage at all) and the DB-backed `pocket/engine.js` exports
+  (arms, calibration, paper ledger, stats) against an in-memory SQLite, plus the remaining
+  `risk.js` gaps. `server/test/strategyMore.test.mjs` (86 tests) covers costs, pocket/engine
+  (pure), bots, synthetics, volumatrix, volengine and longterm.
+  **Whole server suite: 441 tests, 0 failures.** Every new test was mutation-checked — a test that
+  cannot fail is worthless, and a mutation check is the only way to know.
+- **F-26 ⚠️ CODE DONE, THE DEVICE PASS IS STILL OUTSTANDING.** `SecureStore.clearAll` was hardened
+  (it used to remove a hard-coded pair of keys from the plaintext file, so a newly added key's
+  PLAINTEXT copy would survive a "delete my data" wipe forever — now one `MANAGED_KEYS` list drives
+  both sides). What is still missing is the on-device check, and it is now a SCRIPT:
+  **`scripts/f26_device_check.ps1`** — it verifies the PIN survives a force-stop, that
+  `frit_prefs.xml` no longer holds `app_pin`, and that the wipe removes BOTH copies. It needs a
+  device or a booted emulator and a debug build, and takes about two minutes. It could NOT be run
+  on this host: a hand-made AVD never finished booting headless (it stalled at the WHPX/adb stage)
+  and the SDK here has no `cmdline-tools`, so no AVD could be created the normal way either. The
+  real AVD lives in Android Studio.
 - **Design Agent — NEW FEATURE (2026-10-20).** The Design Studio was one shot; it is now a
   three-stage agent, exactly as requested: **(1) research** the web for visual references,
   **(2) turn them into one detailed brief** (canvas, grid + alignment, 60-30-10 palette with
@@ -1075,36 +1129,32 @@ SSE chat), which is where the two real bugs below were hiding.
 
 ### 5c. WHAT IS STILL OPEN after Week 6
 
-*(updated 2026-10-20 — the Week 5 second pass closed F-14, F-19, F-08 and most of F-07; see
-the Week 5 second-pass block in §4. Only what is genuinely still open is listed here.)*
+*(updated 2026-10-20, second time — the Week 5 second pass closed F-14, F-19, F-08, F-07 and
+found F-50. See the Week 5 second-pass block in 4. Only what is genuinely still open is here.)*
 
-- **F-07 (strategy layer tests) - ONE module left.** `strategy.test.mjs` covers `hysteresis`,
-  `rails/router`, `options/pricing`; `strategy_money.test.mjs` (41 tests) covers `risk.js`,
-  `costs.js`, `journal.js`, `position_monitor.js`, `bots.js`, `volumematrix.js`, `volengine.js`,
-  `synthetics.js`, `longterm.js` and `ledger.js`; **`strategyMore.test.mjs` (86 tests, Week 5
-  second pass) adds `pocket/engine.js` and edge cases for the rest.** Still untested:
-  **`structures.js`** (plus `deep_search.js` scraping, which is inherently network-bound).
-- **F-26 EncryptedSharedPreferences - the on-device pass is still the only thing missing.** The
-  CODE is done (`SecureStore.kt`) and the gradle dependency resolves; `clearAll` was hardened
-  this pass (it used to leave a newly-added key's PLAINTEXT copy behind after a wipe). What
-  remains is the real-device check: set a PIN, force-stop, reopen, confirm it survives, and
-  confirm `frit_prefs.xml` no longer holds `app_pin`. Needs a device or emulator.
+- **F-26 EncryptedSharedPreferences - the on-device pass is the only thing missing.** The CODE is
+  done (`SecureStore.kt`), the gradle dependency resolves, and `clearAll` was hardened this pass.
+  What remains is the real-device check, and it is now a script:
+  **`scripts/f26_device_check.ps1`** - it verifies the PIN survives a force-stop, that
+  `frit_prefs.xml` no longer holds `app_pin`, and that the wipe removes BOTH copies. Needs a
+  device or a booted emulator plus a debug build; about two minutes. It could not be run on the
+  audit host (no `cmdline-tools`, and a hand-made AVD never finished booting headless).
 - **F-47 cold-start restore blocks `listen`** - needs an ops/data-safety decision (see 2.3d).
 - **F-48 trading suite half-gated** - watchlist-add is paywalled (402) while scan is free; pick a
   side before the next pricing change (see 2.3d).
+- **`deep_search.js`** - inherently network-bound, so it has no unit tests. The parsing helpers
+  around it could be extracted and tested.
 - **Play Store work** - still deferred by explicit user request (6).
 - **Ops:** always-on hosting for the trading feed (~$5/mo) - see the Ops note in 4.
-- **Rotate the production `AUTH_TOKEN`.** It was committed in plaintext in
-  `PLAYSTORE_RELEASE.md`; it is redacted now, but the credential must be treated as compromised.
-  See the Week 5 second-pass block in 4.
-- 🔴 **ROTATE THE THREE PUBLISHED CREDENTIALS** — `AUTH_TOKEN`, `MISTRAL_API_KEY` and
-  `TWELVE_DATA_KEY` are in the PUBLIC `frit-android` repo's history, byte-identical to the
-  live `server/.env`. Runbook: `scripts/ROTATE_EXPOSED_SECRETS.md`. Do the rotation FIRST —
-  it is the step that actually protects you; purging the history does not un-publish what was
-  already cloned. Consider making the repo private as well.
+- **Rotate the three published credentials.** `AUTH_TOKEN`, `MISTRAL_API_KEY` and
+  `TWELVE_DATA_KEY` are in the PUBLIC `frit-android` repo's history. `AUTH_TOKEN` and
+  `MISTRAL_API_KEY` have since been rotated (new values in `server/.env`), so they are dead -
+  but `TWELVE_DATA_KEY` has NOT been rotated and is still live. Runbook:
+  `scripts/ROTATE_EXPOSED_SECRETS.md`. Rotating is the step that actually protects you; purging
+  the history does not un-publish what was already cloned. Consider making the repo private too.
 - **Decide whether `frit_andriod` should be public.** It is currently PRIVATE. It is a
-  backup today; if it is going to be the working repo, check the secret history and the
-  `server/.env` exposure before flipping it.
+  backup today; if it is going to be the working repo, check the secret history before
+  flipping it.
 
 
 
