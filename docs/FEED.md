@@ -99,17 +99,23 @@ Option style trading — a NEW module, not a remod of `strategy/options/`
 | Pocket Rise/Fall (FX/metals/crypto) | Deriv (`strategy/deriv.js`) | Demo default | `DERIV_REAL_TOKEN` + `DERIV_LIVE=1` |
 | US stocks (intraday/longterm/`/trade`) | Alpaca (`strategy/alpaca.js`) | Paper default | `ALPACA_LIVE_KEY/SECRET` + `ALPACA_LIVE=1` |
 | FX/metals/CFD (intraday/longterm) | MT5 bridge (existing) | Paper while unset | `MT5_BRIDGE_URL` |
-Auto flags: `POCKET_DERIV_AUTO` (default 1 = demo auto, virtual only),
-`ALPACA_AUTO` (default 1 = paper auto). Caps: stake/notional + 20/day +
+Auto flags: `POCKET_DERIV_AUTO` (**default 0 = signals + paper only; set `=1`
+for demo auto-execution**), `ALPACA_AUTO` (default 1 = paper auto). Caps: stake/notional + 20/day +
 5 concurrent Deriv. Fills land in the monitor as `pocket-deriv` / `alpaca*`
 and settle on broker truth. Test: `node deriv_selftest.mjs`, `node alpaca_selftest.mjs`.
 
-## Deriv execution (`strategy/deriv.js`)
-Free Deriv API, Rise/Fall contracts for pocket signals. Demo default.
-- **Symbol rule (fixed)**: real OTC pairs FIRST (`XAUUSD`, `EURUSD`, `BTCUSD`)
-  — `frx*` are Deriv's DERIVED/simulated indices and are fallback-only.
-  Pure synthetics (`R_100`, `1HZ`, `BOOM`, `CRASH`) are NEVER executed: no
-  edge can exist on an RNG stream. Same rule as `rails/router.js`.
+## Deriv data + execution (`strategy/deriv.js`)
+Deriv is BOTH a full market-data provider (keyless public socket, all 89
+markets: synthetics, OTC_* derived indices, frx* forex/metals, cry* crypto)
+and a Rise/Fall execution venue for pocket signals. Demo default.
+- **Symbols**: every Deriv code is feed-able (`BOOM1000`, `R_100`, `OTC_DJI`,
+  `frxXAUUSD`, plain aliases like `EURUSD`/`XAUUSD`/`US30` via `DERIV_MAP`).
+  Execution only refuses RNG-stream synthetics (`R_*`, `1HZ*`, `BOOM*`,
+  `CRASH*`, `stpRNG`, `JD*`, `RB*`, `WLD*`, `RD*`) — no edge can exist on a
+  random stream. OTC_* derived indices mirror real prices and MAY be
+  demo-executed. Same rule as `rails/router.js`.
+- The feed also falls back to Deriv for ANY mapped symbol when its usual
+  providers are dead/absent (free `ticks_history` polls on the public socket).
 - **Why nothing executed**: no `DERIV_DEMO_TOKEN` in `.env`. Diagnose with
   `GET /api/trading/deriv/status` → `diag` (tokenPresent, autoEnabled,
   account, lastRefusals) — every refusal is stored in `deriv_refusals` with
@@ -117,7 +123,8 @@ Free Deriv API, Rise/Fall contracts for pocket signals. Demo default.
 - Verify end-to-end: `POST /api/trading/deriv/test {symbol, direction, stake,
   duration}` — buys ONE real demo contract so you can see it in the Deriv app.
 - Tokens: `DERIV_DEMO_TOKEN` (active), `DERIV_REAL_TOKEN` (ONLY with
-  `DERIV_LIVE=1`; otherwise refused). `DERIV_APP_ID` (1089).
+  `DERIV_LIVE=1`; otherwise refused). `DERIV_APP_ID` must be an app registered
+  on developers.deriv.com (PAT tokens reject legacy ids like `1089`).
 - Auto-buy needs `POCKET_DERIV_AUTO=1` (default 0 = signals + paper only),
   `POCKET_DERIV_STAKE` (default $1, capped $0.35–50), `POCKET_DERIV_MAX_DAY`
   (default 20) + max 5 concurrent contracts.

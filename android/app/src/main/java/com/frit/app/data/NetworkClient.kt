@@ -48,13 +48,13 @@ object NetworkClient {
     private val client: OkHttpClient by lazy {
         OkHttpClient.Builder()
             .connectTimeout(30, TimeUnit.SECONDS)
-            // 210s read: a cold-starting server + a full provider fallback chain
+            // 270s read: a cold-starting server + a full provider fallback chain
             // can legitimately exceed 90s on first touch; the user can still
             // Stop the chat job mid-wait. Previously this fired "timeout" on
             // slow-but-healthy brains. Raised from 150s because the Design
-            // Agent budgets 150s server-side (research + references + brief +
+            // Agent budgets 210s server-side (research + references + brief +
             // render + review) and the Director needs longer still.
-            .readTimeout(210, TimeUnit.SECONDS)
+            .readTimeout(270, TimeUnit.SECONDS)
             .writeTimeout(30, TimeUnit.SECONDS)
             .build()
     }

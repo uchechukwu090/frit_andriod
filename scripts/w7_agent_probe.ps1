@@ -18,6 +18,7 @@ param(
   [int]$MaxRefs = 3,
   [int]$MaxAttempts = 2,
   [switch]$NoRender,
+  [switch]$SaveRender,
   [int]$Port = 18844
 )
 
@@ -112,6 +113,11 @@ try {
     Write-Host ("  art dir : {0}" -f $r.art_direction)
     Write-Host ("  diverge : {0}" -f (($r.divergence.changed) -join ", "))
     Write-Host ("  render  : model={0} url={1} b64={2} type_layer={3}" -f $r.render.model_used, [bool]$r.render.image_url, [bool]$r.render.image_b64, $r.render.type_layer)
+    if ($SaveRender -and $r.render.image_b64) {
+      $img = Join-Path $env:TEMP ("frit_w7_render_{0}.png" -f $run)
+      [System.IO.File]::WriteAllBytes($img, [System.Convert]::FromBase64String($r.render.image_b64))
+      Write-Host ("  saved   : {0}" -f $img)
+    }
     Write-Host ("  verify  : {0}" -f ($r.verification | ConvertTo-Json -Compress -Depth 4))
     if ($r.warnings) { foreach ($w in $r.warnings) { Write-Host ("  warn    : {0}" -f $w) } }
     $results += $r
@@ -139,6 +145,7 @@ finally {
   if (Test-Path $log) { Get-Content $log | Select-String -Pattern "design|agent|Error|error|warn" | Select-Object -Last 25 }
   Cleanup
 }
+
 
 
 
