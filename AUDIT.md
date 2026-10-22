@@ -677,11 +677,44 @@ measures the Phase-6 performance targets. Two real bugs fell out of it; both are
     inside its badge, so a right-aligned CTA did not read as flush right (the badge and the label
     are now both flush with the margin); the leading was 106% of the font size, which made body
     lines overlap and read as "garbled"; and the type colour was picked from the brief's
-    background instead of the artwork's real pixels. The layer now **measures the artwork behind
-    the copy** (mean luminance + variance) and lays a **scrim band** when the backdrop is busy or
-    too low-contrast — which also covers the stray lettering an image model leaves behind when it
-    ignores "no text in the image". Poster body copy now has a 20–40px floor (16px was literally
-    unreadable). 16 unit tests.
+    background instead of the artwork's real pixels. The layer now **measures the artwork under
+    EACH line** (mean luminance + variance via sharp stats) and picks the type colour per line,
+    laying a **scrim band** only when a line is still unreadable — which also covers the stray
+    lettering an image model leaves behind when it ignores "no text in the image". Poster body copy
+    now has a 20–40px floor (16px was literally unreadable). 16 unit tests.
+- **Creative Agent — Week 7 round 3 (2026-10-22): the model was costing 19x more than it needed
+  to, and the fix was free.**
+  - **F-59 ✅ the creative model was overpriced.** `OR_CREATIVE_MODEL` had been moved to
+    `google/gemini-2.5-flash` to escape GLM's reasoning overhead. On the live OpenRouter price list
+    that is **$0.30/$2.50 per Mtok** against `z-ai/glm-5.3-flash`'s **$0.004/$0.134** — the
+    *cheapest* model on the roster, and the one the app already uses everywhere. Measured on the
+    real tasks (read a reference image / write a brief), with a 4000-token budget:
+    | model | $/Mtok in/out | brief | vision | cost/call |
+    |---|---|---|---|---|
+    | `z-ai/glm-5.3-flash` | 0.004/0.134 | 1.8s | 7.1s | **$0.00003** |
+    | `google/gemma-3-4b-it` | 0.040/0.050 | 1.5s | 2.2s | $0.00002 |
+    | `google/gemini-2.5-flash` | 0.300/2.500 | 6.9s | 2.1s | $0.00014 |
+    The earlier "empty completion" was NOT a model problem — it was a **token budget** problem:
+    GLM spent 900/900 tokens on reasoning and returned `content: ""`. At 4000 it reasons for 4–33
+    tokens and answers cleanly. The creative chain is now
+    `OR_CREATIVE_MODEL (default z-ai/glm-5.3-flash) → gemma-3-4b-it → gemini-2.5-flash → draft →
+    fast → mistral`, so the expensive model is only reached if the cheap ones fail.
+  - **F-60 ✅ a timeout is an EXPENSIVE call, not a cheap one.** The reference reads now run in
+    batches of 2 (five concurrent vision calls congest the provider and time out) and stop once
+    there is one more readable reference than the diversity pick needs. Each timeout used to throw
+    the read away AND push the chain onto the next (paid) model. The render stage now gets
+    whatever is left of the budget (up to 90s) because a cut render means no design at all.
+  - **The honest cost picture per design:** the LLM stages are ~5 calls x $0.00003 = **~$0.00015**;
+    the IMAGE is **$0.018** (seedream). So the LLM model choice is under 1% of a design and the
+    image model plus the number of renders is 99% — a corrective retry is another $0.018, and the
+    Design Studio's "variations" renders N of them in parallel. If cost is the priority, the lever
+    is the image count (maxAttempts / variations) and the image slug, not the LLM.
+  - **Concurrency hazard (recorded):** another session was editing the same files while this work
+    ran. A concurrent edit to `creative/typeLayer.js` left `planTypeLayout` with an unbalanced
+    brace (the function never closed, so `export` landed inside it and the server refused to boot).
+    `node --check` on that file caught it, but only after a probe failed with "server died" —
+    **always re-run `node --check` on every creative module after touching it, and re-run the
+    probe after any other session's changes.**
   - **F-59 ✅ the creative model was priced 19× too high.** `google/gemini-2.5-flash` costs
     **$0.30/$2.50** per Mtok; the model the app already uses everywhere else,
     `z-ai/glm-5.3-flash`, costs **$0.004/$0.134** — and it is the better choice here, because the
