@@ -649,6 +649,14 @@ object NetworkClient {
      * Week 7: `seed` pins the run (the query style token, the reference order
      * and the art direction all derive from it) so the same seed reproduces
      * the same design and a new seed never repeats an old one.
+     *
+     * `template` is the graphics template id: the server resolves it and hands
+     * the agent its layout zones as placement constraints, so a template is a
+     * real brief input rather than just the aspect ratio.
+     *
+     * `styleRefs` / `logoUrl` are the user's own images (mood-board + logo).
+     * They are studied alongside the researched references and passed to the
+     * renderer as input references when the active model accepts image input.
      */
     suspend fun designAgent(
         goal: String,
@@ -663,6 +671,10 @@ object NetworkClient {
         verify: Boolean = true,
         seed: Int? = null,
         typeLayer: Boolean = true,
+        template: String? = null,
+        styleRefs: JSONArray? = null,
+        logoUrl: String? = null,
+        freeBrief: Boolean = false,
     ): String = post("/creative-suite/design/agent", JSONObject().apply {
         put("goal", goal)
         if (headline != null) put("headline", headline)
@@ -676,6 +688,10 @@ object NetworkClient {
         put("verify", verify)
         put("type_layer", typeLayer)
         if (seed != null) put("seed", seed)
+        if (template != null) put("template", template)
+        if (styleRefs != null) put("style_refs", styleRefs)
+        if (logoUrl != null) put("logo_url", logoUrl)
+        if (freeBrief) put("free_brief", true)
     }.toString())
 
     suspend fun editVideoOps(video: String?, audio: String?, subtitles: JSONArray?, clips: JSONArray?, operations: JSONArray): String =
@@ -688,6 +704,13 @@ object NetworkClient {
         }.toString())
 
     suspend fun getVideoModels(): String = get("/creative-suite/videos/models")
+
+    /**
+     * Active creative models + what each one can actually do (aspect ratios,
+     * durations, resolutions, references). The studios render their option
+     * chips from this instead of hardcoding lists the model may reject.
+     */
+    suspend fun creativeCapabilities(): String = get("/creative-suite/capabilities")
 
     /** Poll a provider video job (the id inside provider_job, not our vid_ id). */
     suspend fun videoStatus(providerId: String): String = get("/videos/status/${seg(providerId)}")

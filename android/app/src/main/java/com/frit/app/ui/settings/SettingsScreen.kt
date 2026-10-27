@@ -26,8 +26,11 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import com.frit.app.features.creative.CreativeSuiteEngine
 import com.frit.app.ui.model.OnDeviceModelSection
 import com.frit.app.ui.theme.Montserrat
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 /**
  * Settings surface composables, split out of MainActivity.kt (audit F-14).
@@ -67,6 +70,11 @@ fun SettingsScreen(
 ) {
     val context = LocalContext.current
     val brainOptions = com.frit.app.core.RouteController.Brain.values().toList()
+    // Creative models: the studios render their option chips from this, so the
+    // Settings page shows the SAME source of truth instead of a stale copy.
+    val scope = rememberCoroutineScope()
+    var caps by remember { mutableStateOf(CreativeSuiteEngine.cachedCapabilities()) }
+    LaunchedEffect(Unit) { caps = CreativeSuiteEngine.capabilities() }
 
     Column(Modifier.fillMaxSize().background(bg).padding(24.dp).verticalScroll(rememberScrollState())) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -320,6 +328,39 @@ fun SettingsScreen(
         Spacer(Modifier.height(8.dp))
         HorizontalDivider(color = stroke)
         Spacer(Modifier.height(8.dp))
+
+        ExpandableSection(
+            title = "Creative models",
+            subtitle = "What the active image & video models can render",
+            fg = fg, stroke = stroke
+        ) {
+            val c = caps
+            if (c == null) {
+                Text("Loading models…", color = fg.copy(alpha = 0.6f), fontSize = 13.sp, fontFamily = Montserrat)
+            } else {
+                listOf(
+                    "image" to "Image", "design" to "Design", "video" to "Video",
+                    "genjutsu" to "Genjutsu", "avatar" to "Avatar"
+                ).forEach { (key, label) ->
+                    val r = c.role(key)
+                    Text("$label · ${r.label.ifBlank { r.model }}", color = fg, fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold, fontFamily = Montserrat)
+                    if (r.summary.isNotBlank()) {
+                        Text(r.summary, color = fg.copy(alpha = 0.6f), fontSize = 12.sp, fontFamily = Montserrat)
+                    }
+                    Spacer(Modifier.height(10.dp))
+                }
+                Text(
+                    "The studios only offer what the model accepts — an option the model rejects " +
+                        "is hidden or snapped to the nearest supported value.",
+                    color = fg.copy(alpha = 0.6f), fontSize = 12.sp, fontFamily = Montserrat
+                )
+                TextButton(onClick = {
+                    scope.launch(Dispatchers.IO) { caps = CreativeSuiteEngine.capabilities(force = true) }
+                }) { Text("Refresh models", color = fg) }
+            }
+            Spacer(Modifier.height(4.dp))
+        }
 
         // NOTE: server URL + API token fields were removed from Settings — users
         // don't know what a "brain server" is. Values come baked from the build

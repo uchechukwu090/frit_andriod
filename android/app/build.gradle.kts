@@ -197,6 +197,8 @@ dependencies {
 
     // Coil image loading
     implementation("io.coil-kt:coil-compose:2.7.0")
+    // SVG previews (the vector/logo model returns SVG, not a bitmap)
+    implementation("io.coil-kt:coil-svg:2.7.0")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

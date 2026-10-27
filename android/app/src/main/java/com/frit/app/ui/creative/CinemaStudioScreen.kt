@@ -100,6 +100,10 @@ fun CinemaStudioScreen(onClose: () -> Unit = {}, onSubscribe: () -> Unit = {}, o
     var palette by remember { mutableStateOf("Film Stock 35mm") }
     var emotion by remember { mutableStateOf("Neutral") }
     var aspect by remember { mutableStateOf("16:9") }
+    // The render knobs follow the ACTIVE model (see /creative-suite/capabilities).
+    var caps by remember { mutableStateOf(com.frit.app.features.creative.CreativeSuiteEngine.cachedCapabilities() ?: com.frit.app.features.creative.CreativeCapabilities.FALLBACK) }
+    var duration by remember { mutableStateOf(4) }
+    var resolution by remember { mutableStateOf("720p") }
     var busy by remember { mutableStateOf(false) }
     var result by remember { mutableStateOf("") }
     var videoFile by remember { mutableStateOf<java.io.File?>(null) }
@@ -131,17 +135,21 @@ fun CinemaStudioScreen(onClose: () -> Unit = {}, onSubscribe: () -> Unit = {}, o
     val imgPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris ->
         scope.launch(Dispatchers.IO) {
             val added = uris.take(8 - imports.size).mapNotNull { uriToDataUrl(ctx, it, "image/*") }
-            imports = (imports + added).take(8)
+            // Compose state belongs to the main thread — writing it from IO can
+            // drop the update or throw under strict snapshot checking.
+            launch(Dispatchers.Main) { imports = (imports + added).take(8) }
         }
     }
     val vidPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) scope.launch(Dispatchers.IO) {
-            uriToDataUrl(ctx, uri, "video/*")?.let { imports = (imports + it).take(8) }
+            val data = uriToDataUrl(ctx, uri, "video/*")
+            launch(Dispatchers.Main) { if (data != null) imports = (imports + data).take(8) }
         }
     }
 
     val engine = com.frit.app.features.creative.CreativeSuiteEngine
     LaunchedEffect(Unit) {
+        caps = engine.capabilities()
         engine.takeHandoff()?.let { (m, k) ->
             if (k == "image" && m.isNotBlank()) imports = (listOf(m) + imports).take(8)
         }
@@ -286,7 +294,43 @@ fun CinemaStudioScreen(onClose: () -> Unit = {}, onSubscribe: () -> Unit = {}, o
                 Box(Modifier.weight(1f)) { DirectorDropdown("Color grade", opt("palettes", listOf("Film Stock 35mm")), palette, { palette = it }) }
                 Box(Modifier.weight(1f)) { DirectorDropdown("Emotion", opt("emotions", listOf("Neutral")), emotion, { emotion = it }) }
             }
-            DirectorDropdown("Aspect ratio", opt("aspect_ratios", listOf("16:9", "9:16", "1:1")), aspect, { aspect = it })
+            // Aspect ratio: the director's list, filtered to what the model for
+            // THIS kind can render. A ratio the model rejects would otherwise be
+            // snapped away silently on the server.
+            val modelCaps = if (kind == "video") caps.video else caps.image
+            val aspectOptions = run {
+                val base = opt("aspect_ratios", listOf("16:9", "9:16", "1:1"))
+                val allowed = modelCaps.aspects
+                if (allowed.isEmpty()) base
+                else base.filter { allowed.contains(it) }.ifEmpty { allowed }
+            }
+            LaunchedEffect(aspectOptions) {
+                if (!aspectOptions.contains(aspect)) modelCaps.pickAspect(aspect)?.let { aspect = it }
+            }
+            DirectorDropdown("Aspect ratio", aspectOptions, aspect, { aspect = it })
+            if (kind == "video") {
+                if (caps.video.durations.size > 1) {
+                    DirectorDropdown(
+                        "Duration",
+                        caps.video.durations.map { "${it}s" },
+                        "${caps.video.pickDuration(duration) ?: 4}s",
+                        { v -> v.trimEnd('s').toIntOrNull()?.let { duration = it } },
+                    )
+                }
+                if (caps.video.resolutions.size > 1) {
+                    DirectorDropdown(
+                        "Resolution", caps.video.resolutions,
+                        caps.video.pickResolution(resolution) ?: resolution,
+                        { resolution = it },
+                    )
+                }
+            }
+            Text(
+                "Model: ${modelCaps.label.ifBlank { modelCaps.model }}" +
+                    (if (modelCaps.summary.isNotBlank()) " — ${modelCaps.summary}" else ""),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
             Button(
                 onClick = {
                     scope.launch(Dispatchers.IO) {
@@ -298,7 +342,12 @@ fun CinemaStudioScreen(onClose: () -> Unit = {}, onSubscribe: () -> Unit = {}, o
                                 .put("move", move).put("angle", angle).put("lighting", lighting)
                                 .put("palette", palette).put("emotion", emotion)
                             val arr = JSONArray(); imports.forEach { arr.put(it) }
-                            val r = JSONObject(NetworkClient.cinemaGenerate(prompt, kind, director, arr, aspect, if (kind == "video") 4 else null, if (kind == "video") "720p" else null, brandKitId))
+                            val r = JSONObject(NetworkClient.cinemaGenerate(
+                                prompt, kind, director, arr, aspect,
+                                if (kind == "video") (caps.video.pickDuration(duration) ?: 4) else null,
+                                if (kind == "video") (caps.video.pickResolution(resolution) ?: "720p") else null,
+                                brandKitId
+                            ))
                             val locked = parsePlanGate(r)
                             if (locked != null) { gate = locked; result = ""; status = "" }
                             else if (r.optBoolean("ok", false)) {

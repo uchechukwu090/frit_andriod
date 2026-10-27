@@ -16,6 +16,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import coil.compose.AsyncImage
+import coil.decode.SvgDecoder
 import coil.request.ImageRequest
 
 /**
@@ -48,6 +49,61 @@ const val MIME_IMAGE = "image/png"
 const val MIME_VIDEO = "video/mp4"
 
 /**
+ * The first bytes of a base64 sample, decoded WITHOUT the Android framework.
+ *
+ * `android.util.Base64` is stubbed under `unitTests.isReturnDefaultValues`:
+ * its decode() returns null there, which silently disabled byte sniffing in
+ * every JVM test (the three mime tests failed for exactly this reason).
+ * `java.util.Base64` exists on the JVM and on Android since API 26 — this
+ * app's minSdk — so the sniff behaves identically in a test and on a device.
+ *
+ * Tolerates a truncated tail (a sample is a prefix of a longer blob), line
+ * breaks, and the URL-safe alphabet, because a sniff must never depend on the
+ * blob being well-formed.
+ */
+internal fun base64Head(sample: String, chars: Int = 64): ByteArray? {
+    val clean = buildString {
+        for (ch in sample) {
+            when {
+                ch.isLetterOrDigit() || ch == '+' || ch == '/' -> append(ch)
+                ch == '-' -> append('+')
+                ch == '_' -> append('/')
+                else -> Unit // padding, whitespace, quotes: irrelevant to a sniff
+            }
+        }
+    }
+    val take = (minOf(chars, clean.length) / 4) * 4
+    if (take < 4) return null
+    return try {
+        java.util.Base64.getDecoder().decode(clean.take(take))
+    } catch (_: Exception) {
+        null
+    }
+}
+
+/**
+ * Best-guess mime for a bare base64 blob by sniffing the first bytes.
+ * Returns null when the blob is too short or not valid base64.
+ */
+fun sniffBareBase64Mime(raw: String?): String? {
+    val s = raw?.trim().orEmpty()
+    if (s.isEmpty() || s.equals("null", ignoreCase = true)) return null
+    if (s.startsWith("data:") || s.startsWith("http") || s.startsWith("file:") || s.startsWith("content:")) return null
+    if (s.length < 16) return null
+    return try {
+        val head = base64Head(s) ?: return null
+        val txt = String(head, Charsets.ISO_8859_1)
+        when {
+            head.size > 3 && head[0] == 0xFF.toByte() && head[1] == 0xD8.toByte() -> "image/jpeg"
+            head.size > 8 && head[0] == 0x89.toByte() && txt.substring(1, 4) == "PNG" -> "image/png"
+            txt.startsWith("RIFF") && txt.contains("WEBP") -> "image/webp"
+            txt.contains("<svg") || txt.contains("<?xml") -> "image/svg+xml"
+            else -> null
+        }
+    } catch (_: Exception) { null }
+}
+
+/**
  * Turn whatever the server handed us into something loadable.
  *
  * Accepts: a `data:` URI, a raw base64 blob, an http(s) URL, a file:// or
@@ -57,16 +113,69 @@ const val MIME_VIDEO = "video/mp4"
  * @param raw the value straight out of the JSON
  * @param mime the mime to use when [raw] is a bare base64 blob
  */
+/**
+ * What is actually inside a data: URI? Looks at the first bytes, not the
+ * declared mime (a vector model hands back SVG while the app wraps it as
+ * image/png). Used only to make a failed preview explain itself.
+ */
+internal fun sniffFormat(url: String): String {
+    if (!url.startsWith("data:")) return "remote"
+    val b64 = url.substringAfter(",", "")
+    if (b64.isEmpty()) return "empty"
+    return try {
+        val head = base64Head(b64) ?: return "not valid base64"
+        val txt = String(head, Charsets.ISO_8859_1)
+        when {
+            head.size > 3 && head[0] == 0xFF.toByte() && head[1] == 0xD8.toByte() -> "JPEG"
+            head.size > 8 && head[0] == 0x89.toByte() && txt.substring(1, 4) == "PNG" -> "PNG"
+            txt.startsWith("RIFF") && txt.contains("WEBP") -> "WEBP"
+            txt.contains("<svg") || txt.contains("<?xml") -> "SVG"
+            txt.contains("ftypavif") -> "AVIF"
+            else -> "unknown format (starts '" + txt.take(10).filter { it.isLetterOrDigit() } + "')"
+        }
+    } catch (_: Exception) { "not valid base64" }
+}
+
 fun normalizeMediaUrl(raw: String?, mime: String = MIME_IMAGE): String? {
     val s = raw?.trim().orEmpty()
     if (s.isEmpty()) return null
     // org.json's optString() on a JSON null returns the literal "null".
     if (s.equals("null", ignoreCase = true)) return null
-    if (s.startsWith("data:")) return s
-    if (s.startsWith("http://") || s.startsWith("https://")) return s
-    if (s.startsWith("file://") || s.startsWith("content://")) return s
-    // Anything else is a bare base64 payload.
-    return "data:$mime;base64,$s"
+    return when {
+        s.startsWith("data:") -> rewriteDataUriIfMislabelled(s)
+        s.startsWith("http://") || s.startsWith("https://") -> s
+        s.startsWith("file://") || s.startsWith("content://") -> s
+        else -> {
+            // Bare base64 blob.
+            val sniffed = sniffBareBase64Mime(s)
+            val usedMime = sniffed ?: mime
+            "data:$usedMime;base64,$s"
+        }
+    }
+}
+
+/**
+ * If a `data:` URI is wrapped in the wrong mime, rewrite the prefix to match
+ * the first bytes; otherwise return it unchanged.
+ */
+fun rewriteDataUriIfMislabelled(url: String): String {
+    val comma = url.indexOf(',')
+    if (comma < 0) return url
+    // `comma` is an INDEX, not a delimiter: taking it as a delimiter matched no
+    // substringAfter overload and failed the build. substring(comma + 1) is what
+    // was meant — everything after the comma of a data: URI.
+    val body = url.substring(comma + 1)
+    if (body.isEmpty()) return url
+    val real = try {
+        // sniffBareBase64Mime ignores a data: prefix and inspects raw base64.
+        sniffBareBase64Mime(body)
+    } catch (_: Exception) { null }
+    if (real == null) return url
+    val declared = url.substringBefore(",").substringAfter("data:").substringBefore(";")
+    if (!declared.equals(real, ignoreCase = true)) {
+        return "data:$real;base64,$body"
+    }
+    return url
 }
 
 /**
@@ -110,7 +219,16 @@ fun CreativeImage(
         Box(modifier, contentAlignment = Alignment.Center) {
             Text(
                 if (url.startsWith("http")) "Preview failed to load — the image host may be blocking the request."
-                else "Preview failed to load — the image data is incomplete.",
+                else {
+                    val fmt = sniffFormat(url)
+                    val kb = url.length / 1024
+                    when {
+                        fmt == "PNG" && kb < 2 -> "Preview is a tiny/empty PNG — the render may have failed."
+                        fmt == "WEBP" -> "Preview is a WebP image. If it still looks blank, the previewer does not support WebP — save or re-run and it may come back as PNG."
+                        fmt == "SVG" -> "Preview is an SVG vector. The image box cannot show SVG directly — save the file to view it."
+                        else -> "Preview failed to load — got ${fmt}, ${kb} KB."
+                    }
+                },
                 style = MaterialTheme.typography.bodySmall,
             )
         }
@@ -119,6 +237,9 @@ fun CreativeImage(
     AsyncImage(
         model = ImageRequest.Builder(LocalContext.current)
             .data(url)
+            // SVG (vector/logo models) is not a bitmap: without this decoder
+            // the preview fails whatever mime the data was wrapped in.
+            .decoderFactory(SvgDecoder.Factory())
             // Bounded decode: Coil samples the source down to the target size
             // instead of materialising the full-resolution bitmap.
             .crossfade(true)
@@ -148,6 +269,7 @@ fun CreativeImageWithState(
             AsyncImage(
                 model = ImageRequest.Builder(LocalContext.current)
                     .data(url)
+                    .decoderFactory(SvgDecoder.Factory())
                     .crossfade(true)
                     .build(),
                 contentDescription = null,

@@ -10,6 +10,27 @@ Build a comprehensive mobile trading app with AI integration leveraging the exis
 (backfill budget, candle-close scans, per-user fan-out with anti-spam). Engine seam:
 `analyze(symbol, {candles30M, candles4H})`. Always-on hosting required for true 24/7.
 
+## Signal lifecycle + predictive volume gate (Oct 2026)
+A directional bot (scalping / intraday / longterm) no longer fires a new
+signal — new entry, new TP/SL — at every candle close. One live signal per
+(user, bot, pair) in `signal_state`:
+- **fire** only when nothing is live and the read is actionable (confidence ≥ the pair's floor)
+- **hold** on a same-direction read *or* a WAIT: TP/SL are frozen, the run is logged as `HOLD` and never counts as a trade
+- **close** on TP / SL / 12h expiry / opposite read (`CLOSE_AND_FIRE` restarts the cycle)
+- **retrigger** only when `volumeforecast.js` says activity is about to EXPAND
+  with that trend (5m forecast, 1m pace leg): one fresh signal with freshly
+  computed entry/TP/SL, spaced ≥15m, capped at 2 per signal, refused once 70%
+  of the target is consumed, and refused outright on a ≥5x exhaustion spike.
+  A retrigger refreshes the signal; it does NOT send a second order while the
+  original one is open (`signal_state.placed`).
+Modules: `server/src/strategy/signalstate.js` (decision + store) and
+`volumeforecast.js` (the forecaster, with `backtestForecast()` for measured
+lift). Tests: `test/signalstate.test.mjs`, `test/volumeforecast.test.mjs`,
+`test/botsLifecycle.test.mjs`.
+Honest data limits: FX/gold volume is broker tick volume (no open interest, no
+block prints), and a feed with no volume falls back to bar range as a labelled
+activity proxy with the score capped.
+
 ## Architecture
 
 ### Server-Side (Node.js/Express) - Extend Existing
@@ -195,6 +216,12 @@ Response: `{ positions: PortfolioPosition[], metrics: RiskMetrics, summary: Port
 ### GET /api/trading/sentiment
 Query: `?symbols=XAUUSD,EURUSD`
 Response: `{ sentiment: Map<Symbol, SentimentData> }`
+
+### GET /api/trading/volume-forecast
+Query: `?symbol=XAUUSD&trend=BUY|SELL&backtest=1`
+Response: `{ symbol, forecast: { available, expansion, score, needScore, direction, features, levels: {entry,sl,tp,rr}, reasons, dataNote }, backtest? }`
+The same forecaster the bot lifecycle consults before a retrigger; `backtest=1`
+returns its measured hit-rate and lift on that symbol's own 5m history.
 
 ### POST /api/trading/ai/explain
 ```json

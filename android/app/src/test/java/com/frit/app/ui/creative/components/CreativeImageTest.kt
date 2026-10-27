@@ -32,7 +32,40 @@ class CreativeImageTest {
     @Test
     fun addsTheDataPrefixToARawBase64Blob() {
         val b64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB"
+        // PNG magic bytes -> image/png.
         assertEquals("data:image/png;base64,$b64", normalizeMediaUrl(b64))
+    }
+
+    @Test
+    fun sniffsWebPBareBase64AsWebP() {
+        // A webp blob (RIFF....WEBP...) must not be labelled image/png.
+        val webp = "UklGRiQAAABXRUJQVjA4IAgAAADwAQCdASoBAAEAAAEAAACskYND\n"
+            .replace("\n", "")
+        val out = normalizeMediaUrl(webp)
+        assertTrue(out?.startsWith("data:image/webp;base64,") == true)
+    }
+
+    @Test
+    fun sniffsJPEGBareBase64AsJpeg() {
+        val jpg = "/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAAMCAgMCAgMDAwMEAwMEBQ="
+        val out = normalizeMediaUrl(jpg)
+        assertEquals("data:image/jpeg;base64,$jpg", out)
+    }
+
+    @Test
+    fun keepsTheDeclaredMimeWhenUnambiguous() {
+        // A data: URI that is already labelled correctly and whose bytes agree
+        // is unchanged.
+        val png = "data:image/png;base64,iVBORw0KGgo="
+        assertEquals(png, normalizeMediaUrl(png))
+    }
+
+    @Test
+    fun rewritesAWrongMimeDataUri() {
+        // A webp payload wrongly wrapped as image/png must be re-labelled.
+        val wrong = "data:image/png;base64,UklGRiQAAABXRUJQVjA4IAg"
+        val out = normalizeMediaUrl(wrong)
+        assertTrue(out?.startsWith("data:image/webp;base64,") == true)
     }
 
     @Test

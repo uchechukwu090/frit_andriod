@@ -21,6 +21,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun GenerateScreen(onClose: () -> Unit = {}, onSubscribe: () -> Unit = {}, onHandoff: (String) -> Unit = {}) {
     val ctx = LocalContext.current
@@ -29,6 +30,11 @@ fun GenerateScreen(onClose: () -> Unit = {}, onSubscribe: () -> Unit = {}, onHan
     var prompt by remember { mutableStateOf("") }
     var kind by remember { mutableStateOf("image") }
     var aspect by remember { mutableStateOf("1:1") }
+    // Knobs come from the ACTIVE model, not from a hardcoded list: the image
+    // model may reject 4:5 and the video model may only render 4s/720p.
+    var caps by remember { mutableStateOf(com.frit.app.features.creative.CreativeSuiteEngine.cachedCapabilities() ?: com.frit.app.features.creative.CreativeCapabilities.FALLBACK) }
+    var duration by remember { mutableStateOf(4) }
+    var resolution by remember { mutableStateOf("720p") }
     var importUrl by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
     var imageOut by remember { mutableStateOf<String?>(null) }
@@ -39,7 +45,22 @@ fun GenerateScreen(onClose: () -> Unit = {}, onSubscribe: () -> Unit = {}, onHan
     var ideasBusy by remember { mutableStateOf(false) }
 
     val imgPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        if (uri != null) scope.launch(Dispatchers.IO) { importUrl = uriToDataUrl(ctx, uri, "image/*") }
+        if (uri != null) scope.launch(Dispatchers.IO) {
+            val data = uriToDataUrl(ctx, uri, "image/*")
+            // Compose state must be written on the main thread.
+            launch(Dispatchers.Main) { importUrl = data }
+        }
+    }
+
+    // Load what the active models accept, then snap the current choices into
+    // that set (a 4:5 pick on a model that rejects it becomes the closest
+    // ratio the model DOES render, instead of being silently ignored server-side).
+    LaunchedEffect(Unit) { caps = engine.capabilities() }
+    val role = if (kind == "image") caps.image else caps.video
+    LaunchedEffect(role) {
+        role.pickAspect(aspect)?.let { if (it != aspect) aspect = it }
+        caps.video.pickDuration(duration)?.let { if (it != duration) duration = it }
+        caps.video.pickResolution(resolution)?.let { if (it != resolution) resolution = it }
     }
 
     fun saveCurrent() {
@@ -97,10 +118,26 @@ fun GenerateScreen(onClose: () -> Unit = {}, onSubscribe: () -> Unit = {}, onHan
                 title = "Generate", onBack = onClose,
                 saveEnabled = imageOut != null || videoFile != null, onSave = { saveCurrent() },
                 downloadEnabled = imageOut != null || videoFile != null, onDownload = { downloadCurrent() },
-                exportEnabled = imageOut != null,
+                exportEnabled = imageOut != null || videoFile != null,
                 onExport = {
-                    if (imageOut != null) engine.sendHandoff(imageOut!!, "image")
-                    onHandoff("export")
+                    val img = imageOut
+                    val vid = videoFile
+                    if (img != null) {
+                        engine.sendHandoff(img, "image")
+                        onHandoff("export")
+                    } else if (vid != null) {
+                        // Same 8MB ceiling as the other studios: bigger clips are
+                        // downloaded, not base64'd through the handoff bus.
+                        if (vid.length() > 8_000_000) status = "Video too large to hand off — download it instead"
+                        else {
+                            try {
+                                val dataUrl = "data:video/mp4;base64," + android.util.Base64
+                                    .encodeToString(vid.readBytes(), android.util.Base64.NO_WRAP)
+                                engine.sendHandoff(dataUrl, "video")
+                                onHandoff("export")
+                            } catch (e: Exception) { status = "Export failed: ${e.message}" }
+                        }
+                    }
                 },
             )
         }
@@ -108,14 +145,47 @@ fun GenerateScreen(onClose: () -> Unit = {}, onSubscribe: () -> Unit = {}, onHan
         Column(Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             OutlinedTextField(value = prompt, onValueChange = { prompt = it }, label = { Text("Prompt — describe what to create…") }, modifier = Modifier.fillMaxWidth(), minLines = 3)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilterChip(selected = kind == "image", onClick = { kind = "image"; aspect = "1:1" }, label = { Text("Image") })
-                FilterChip(selected = kind == "video", onClick = { kind = "video"; aspect = "16:9" }, label = { Text("Video") })
+                FilterChip(selected = kind == "image", onClick = {
+                    kind = "image"
+                    aspect = caps.image.pickAspect("1:1") ?: "1:1"
+                }, label = { Text("Image") })
+                FilterChip(selected = kind == "video", onClick = {
+                    kind = "video"
+                    aspect = caps.video.pickAspect("16:9") ?: "16:9"
+                }, label = { Text("Video") })
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                (if (kind == "image") listOf("1:1", "16:9", "9:16", "4:5") else listOf("16:9", "9:16", "1:1")).forEach { a ->
+            // Aspect chips: ONLY what the model in charge accepts. FlowRow because
+            // providers list up to 18 ratios — a plain Row would clip them.
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                val aspects = role.aspects.ifEmpty { listOf(aspect) }
+                aspects.forEach { a ->
                     FilterChip(selected = aspect == a, onClick = { aspect = a }, label = { Text(a) })
                 }
             }
+            if (kind == "video") {
+                if (caps.video.durations.size > 1) {
+                    Text("Duration", style = MaterialTheme.typography.labelMedium)
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        caps.video.durations.forEach { d ->
+                            FilterChip(selected = duration == d, onClick = { duration = d }, label = { Text("${d}s") })
+                        }
+                    }
+                }
+                if (caps.video.resolutions.size > 1) {
+                    Text("Resolution", style = MaterialTheme.typography.labelMedium)
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        caps.video.resolutions.forEach { r ->
+                            FilterChip(selected = resolution == r, onClick = { resolution = r }, label = { Text(r) })
+                        }
+                    }
+                }
+            }
+            Text(
+                "Model: ${role.label.ifBlank { role.model }}" +
+                    (if (role.summary.isNotBlank()) " — ${role.summary}" else ""),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
             OutlinedButton(onClick = { imgPicker.launch("image/*") }, modifier = Modifier.fillMaxWidth()) {
                 Icon(Icons.Default.Upload, null); Spacer(Modifier.width(6.dp))
                 Text(if (importUrl == null) "Import image (optional reference)" else "Reference attached ✓")
@@ -164,7 +234,14 @@ fun GenerateScreen(onClose: () -> Unit = {}, onSubscribe: () -> Unit = {}, onHan
                                     status = creativeErrorText(r)
                                 }
                             } else {
-                                val r = JSONObject(NetworkClient.generateVideo(prompt, 4, "720p", aspect))
+                                // Send exactly what the chips show — the model's
+                                // supported duration/resolution, not a hardcoded 4/720p.
+                                val r = JSONObject(NetworkClient.generateVideo(
+                                    prompt,
+                                    caps.video.pickDuration(duration) ?: 4,
+                                    caps.video.pickResolution(resolution) ?: "720p",
+                                    aspect
+                                ))
                                 val locked = parsePlanGate(r)
                                 if (locked != null) {
                                     gate = locked; status = ""

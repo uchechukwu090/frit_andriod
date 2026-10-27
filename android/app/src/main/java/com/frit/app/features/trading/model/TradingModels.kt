@@ -20,8 +20,55 @@ enum class AssetClass(val displayName: String) {
     CRYPTO("Crypto"),
     STOCKS("Stocks"),
     COMMODITIES("Commodities"),
-    INDICES("Indices")
+    INDICES("Indices"),
+    SYNTHETICS("Synthetics")
 }
+
+@Parcelize
+data class MarketRecommendation(
+    val symbol: String,
+    val name: String,
+    val market: String, // FX, CRYPTO, STOCKS, INDICES, SYNTHETICS
+    val type: String, // TRADE, INVEST
+    val horizon: String,
+    val action: String, // STRONG BUY, BUY, INVEST, ACCUMULATE, SELL, STRONG SELL, RISE / CALL, FALL / PUT
+    val grade: String, // A+, A, B+
+    val performanceScore: Int,
+    val winRateEst: Int,
+    val currentPrice: Double,
+    val return24h: Double,
+    val rsi: Int,
+    val trend: String,
+    val entry: Double,
+    val sl: Double,
+    val tp1: Double,
+    val tp2: Double,
+    val rr: Double,
+    val volatility: String,
+    val reasoning: String,
+    val isSynthetic: Boolean = false,
+    val preferredContract: String? = null
+) : Parcelable
+
+@Parcelize
+data class MarketNewsItem(
+    val id: String,
+    val title: String,
+    val currency: String,
+    val date: String,
+    val time: Long,
+    val impact: String, // HIGH, MEDIUM, LOW, HOLIDAY
+    val forecast: String = "-",
+    val previous: String = "-",
+    val actual: String? = null,
+    val isUpcoming: Boolean = false,
+    val outcome: String? = null, // BEAT, MISSED, IN_LINE
+    val variance: String? = null,
+    val bias: String? = null,
+    val volatilityRating: String? = null,
+    val marketAnalysis: String? = null,
+    val affectedPairs: List<String> = emptyList()
+) : Parcelable
 
 @Parcelize
 data class TradingSignal(
@@ -262,7 +309,8 @@ data class BotPairConfig(
     val tradeEnabled: Boolean = false,
     val signalEnabled: Boolean = true,
     val minConfidence: Int = 60,
-    val maxTradesDay: Int = 2
+    val maxTradesDay: Int = 2,
+    val positionsPerSignal: Int = 1
 ) : Parcelable
 
 /**
@@ -310,6 +358,13 @@ data class TradingAccount(
     val userId: String = "",
     val balance: Double = 1000.0,
     val riskProfile: String = "MODERATE",
+    /** "AUTO" = the lot-size engine (Kelly) picks every lot from balance + profile.
+     *  "FIXED" = [fixedLot] is used exactly as the user entered it. */
+    val lotMode: String = "AUTO",
+    val fixedLot: Double = 0.01,
+    /** How many positions the bot opens per signal. 1 = one entry per signal;
+     *  2+ = pyramiding / scaling into the same direction. */
+    val positionsPerSignal: Int = 1,
     val hasDerivToken: Boolean = false,
     val derivTokenMode: String = "platform",
     val hasMt5: Boolean = false,

@@ -228,11 +228,7 @@ fun MainScreen(
     var editorImageUrl by remember { mutableStateOf("") }
     var editorAssetId by remember { mutableStateOf("") }
     var showVideoEditor by remember { mutableStateOf(false) }
-    var showStoryboard by remember { mutableStateOf(false) }
-    var showTemplates by remember { mutableStateOf(false) }
-    var showBatchEdit by remember { mutableStateOf(false) }
     var showExport by remember { mutableStateOf(false) }
-    var showProjectList by remember { mutableStateOf(false) }
     var showSidebar by remember { mutableStateOf(false) }
     var showGenerate by remember { mutableStateOf(false) }
     var showCinema by remember { mutableStateOf(false) }
@@ -263,8 +259,7 @@ fun MainScreen(
         showGenjutsu = false; showAds = false; showInfluencer = false
         showCharacters = false; showLipSync = false; showBrandKit = false
         showDesign = false; showImageEditor = false; showVideoEditor = false
-        showStoryboard = false; showTemplates = false; showBatchEdit = false
-        showExport = false; showProjectList = false; showDirector = false
+        showExport = false; showDirector = false
         when (key) {
             "sidebar" -> showSidebar = true
             "chats" -> showChats = true
@@ -288,11 +283,7 @@ fun MainScreen(
             "director" -> showDirector = true
             "imageEditor" -> showImageEditor = true
             "videoEditor" -> showVideoEditor = true
-            "storyboard" -> showStoryboard = true
-            "templates" -> showTemplates = true
-            "batchEdit" -> showBatchEdit = true
             "export" -> showExport = true
-            "projects" -> showProjectList = true
         }
     }
     fun goBack() {
@@ -1034,13 +1025,9 @@ fun MainScreen(
                     onBrandKit = { pushNav("brandkit"); showBrandKit = true; showCreativeSuite = false },
                     onDesign = { pushNav("design"); showDesign = true; showCreativeSuite = false },
                     onDirector = { pushNav("director"); showDirector = true; showCreativeSuite = false },
-                    onImageEdit = { editorImageUrl = ""; editorAssetId = ""; pushNav("imageEditor"); showImageEditor = true; showCreativeSuite = false },
-                    onVideoEdit = { pushNav("videoEditor"); showVideoEditor = true; showCreativeSuite = false },
-                    onStoryboard = { pushNav("storyboard"); showStoryboard = true; showCreativeSuite = false },
-                    onTemplates = { pushNav("templates"); showTemplates = true; showCreativeSuite = false },
-                    onBatchEdit = { pushNav("batchEdit"); showBatchEdit = true; showCreativeSuite = false },
-                    onExport = { pushNav("export"); showExport = true; showCreativeSuite = false },
-                    onProjects = { pushNav("projects"); showProjectList = true; showCreativeSuite = false }
+                    // The Edit & Manage tiles were removed from the suite hub.
+                    // Export stays reachable through the in-studio handoff bus
+                    // (top-bar Export in every studio).
                 )
             }
             showGenerate -> {
@@ -1140,49 +1127,10 @@ fun MainScreen(
                     onHandoff = { goHandoff(it) },
                 )
             }
-            showStoryboard -> {
-                com.frit.app.ui.creative.StoryboardScreen(
-                    onClose = { goBack() },
-                    onExport = { pushNav("export"); showStoryboard = false; showExport = true },
-                    onHandoff = { goHandoff(it) },
-                )
-            }
-            showTemplates -> {
-                com.frit.app.ui.creative.TemplateGalleryScreen(
-                    onClose = { goBack() }
-                )
-            }
-            showBatchEdit -> {
-                com.frit.app.ui.creative.BatchEditScreen(
-                    onClose = { goBack() },
-                    onHandoff = { goHandoff(it) },
-                )
-            }
             showExport -> {
                 com.frit.app.ui.creative.ExportScreen(
                     onClose = { goBack() },
                     onExported = { url -> shareExportAsset(context, url) }
-                )
-            }
-            showProjectList -> {
-                com.frit.app.ui.creative.ProjectListScreen(
-                    onClose = { goBack() },
-                    onProjectSelected = { id ->
-                        // Load the project and open its first image asset in
-                        // the editor instead of dropping the selection (F3).
-                        editorImageUrl = ""
-                        editorAssetId = ""
-                        scope.launch(kotlinx.coroutines.Dispatchers.IO) {
-                            val url = runCatching {
-                                val p = com.frit.app.features.creative.CreativeSuiteEngine.loadProject(id).getOrNull()
-                                p?.assets?.firstOrNull { it.kind == "image" && it.currentUrl.isNotBlank() }?.currentUrl
-                                    ?: p?.assets?.firstOrNull { it.currentUrl.isNotBlank() }?.currentUrl
-                                    ?: p?.thumbnailUrl
-                            }.getOrNull().orEmpty()
-                            if (url.isNotBlank()) editorImageUrl = url
-                        }
-                        pushNav("imageEditor"); showProjectList = false; showImageEditor = true
-                    }
                 )
             }
             else -> {

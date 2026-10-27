@@ -1,13 +1,9 @@
 package com.frit.app.features.creative
 
 import android.content.Context
-import android.net.ConnectivityManager
-import android.net.NetworkCapabilities
 import android.util.Log
 import com.frit.app.data.NetworkClient
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -15,18 +11,19 @@ import org.json.JSONObject
 object CreativeSuiteEngine {
     private const val TAG = "CreativeSuiteEngine"
 
-    private var appContext: Context? = null
+    /**
+     * Library asset ceiling (chars in a `data:` URL ≈ bytes). Every studio
+     * saves through saveToLibrary, and the asset URL is stored as TEXT in the
+     * server's SQLite row while Express stops reading bodies at 40MB — so a
+     * big base64 clip is rejected late with a bare error. Fail HERE, before
+     * the upload, with a message that says what to do instead.
+     */
+    private const val MAX_LIBRARY_DATA_URL_CHARS = 8 * 1024 * 1024
 
-    private val _currentProject = MutableStateFlow<CreativeProject?>(null)
-    val currentProject = _currentProject.asStateFlow()
+    private var appContext: Context? = null
 
     private val undoStacks = mutableMapOf<String, MutableList<EditOperation>>()
     private val redoStacks = mutableMapOf<String, MutableList<EditOperation>>()
-
-    private val _activeBatchJobs = MutableStateFlow<Map<String, BatchJob>>(emptyMap())
-    val activeBatchJobs = _activeBatchJobs.asStateFlow()
-
-    private val offlineQueue = mutableListOf<PendingOperation>()
 
     // Soul ID handoff: CharactersScreen drops element references here;
     // CinemaStudioScreen picks them up on launch so the same face follows.
@@ -61,6 +58,12 @@ object CreativeSuiteEngine {
         withContext(Dispatchers.IO) {
             try {
                 if (url.isBlank()) return@withContext Result.failure(Exception("nothing to save yet"))
+                if (url.startsWith("data:") && url.length > MAX_LIBRARY_DATA_URL_CHARS) {
+                    val mb = "%.1f".format(url.length / 1024.0 / 1024.0)
+                    return@withContext Result.failure(
+                        Exception("Video/image is ${mb}MB — too large to keep in the library (8MB max). Use Download instead.")
+                    )
+                }
                 val listResp = NetworkClient.getProjects()
                 val listJson = JSONObject(listResp)
                 val arr = listJson.optJSONArray("projects")
@@ -94,25 +97,36 @@ object CreativeSuiteEngine {
         appContext = context.applicationContext
     }
 
-    suspend fun createProject(name: String, type: String): Result<String> = withContext(Dispatchers.IO) {
-        try {
-            val response = NetworkClient.createProject(name, type, null)
-            val json = JSONObject(response)
-            if (json.optBoolean("ok")) Result.success(json.getString("project_id"))
-            else Result.failure(Exception(json.optString("error", "Unknown error")))
-        } catch (e: Exception) { Result.failure(e) }
-    }
+    // ---- Model capabilities (what the active models can actually do) ----
+    // Cached in memory AND in prefs: a studio opened offline still shows the
+    // last known option set instead of falling back to a list that may not
+    // match the model the server is running now.
+    private const val CAPS_PREF = "creative_caps_v1"
+    @Volatile private var capsCache: CreativeCapabilities? = null
 
-    suspend fun loadProject(projectId: String): Result<CreativeProject> = withContext(Dispatchers.IO) {
+    fun cachedCapabilities(): CreativeCapabilities? = capsCache
+
+    suspend fun capabilities(force: Boolean = false): CreativeCapabilities = withContext(Dispatchers.IO) {
+        if (!force) capsCache?.let { return@withContext it }
+        val prefs = appContext?.getSharedPreferences("frit_prefs", Context.MODE_PRIVATE)
+        if (!force) {
+            CreativeCapabilities.fromJson(prefs?.getString(CAPS_PREF, null))?.let {
+                capsCache = it
+                return@withContext it
+            }
+        }
         try {
-            val response = NetworkClient.getProject(projectId)
-            val json = JSONObject(response)
-            if (json.optBoolean("ok")) {
-                val project = CreativeProject.fromJson(json.getJSONObject("project"))
-                _currentProject.value = project
-                Result.success(project)
-            } else Result.failure(Exception(json.optString("error")))
-        } catch (e: Exception) { Result.failure(e) }
+            val raw = NetworkClient.creativeCapabilities()
+            CreativeCapabilities.fromJson(raw)?.let {
+                capsCache = it
+                prefs?.edit()?.putString(CAPS_PREF, raw)?.apply()
+                return@withContext it
+            }
+            Log.w(TAG, "capabilities: unexpected payload, keeping cache")
+        } catch (e: Exception) {
+            Log.w(TAG, "capabilities fetch failed: ${e.message}")
+        }
+        capsCache ?: CreativeCapabilities.FALLBACK
     }
 
     suspend fun editImage(assetId: String, operations: List<EditOperation>): Result<EditedResult> = withContext(Dispatchers.IO) {
@@ -144,73 +158,5 @@ object CreativeSuiteEngine {
         return editImage(assetId, undoStacks[assetId]?.toList() ?: emptyList())
     }
 
-    suspend fun startBatch(images: List<String>, operation: String, params: JSONObject): String {
-        val imagesArray = JSONArray()
-        images.forEach { imagesArray.put(it) }
-        val response = NetworkClient.batchEdit(imagesArray, operation, params)
-        val json = JSONObject(response)
-        val jobId = json.optString("job_id", "")
-        if (jobId.isNotBlank()) {
-            _activeBatchJobs.value = _activeBatchJobs.value + (jobId to BatchJob(
-                id = jobId, operation = operation, total = images.size, completed = 0
-            ))
-        }
-        return jobId
-    }
 
-    /**
-     * Run a batch edit synchronously: the server processes every image and
-     * returns per-image results inline. Returns (resultUrl?, error?) per input.
-     */
-    suspend fun runBatch(images: List<String>, operation: String, params: JSONObject): List<Pair<String?, String>> =
-        withContext(Dispatchers.IO) {
-            val imagesArray = JSONArray()
-            images.forEach { imagesArray.put(it) }
-            val response = NetworkClient.batchEdit(imagesArray, operation, params)
-            val json = JSONObject(response)
-            if (!json.optBoolean("ok", false)) {
-                throw Exception(json.optString("error", "batch failed"))
-            }
-            val arr = json.optJSONArray("results") ?: JSONArray()
-            (0 until arr.length()).map { i ->
-                val o = arr.optJSONObject(i)
-                if (o != null && o.optBoolean("ok", false)) {
-                    o.optString("result").ifBlank { null } to ""
-                } else {
-                    null to (o?.optString("error", "failed") ?: "failed")
-                }
-            }
-        }
-
-    suspend fun pollBatchStatus(jobId: String): BatchJob? {
-        val response = NetworkClient.getBatchStatus(jobId)
-        val json = JSONObject(response)
-        val status = json.optString("status")
-        val completed = json.optInt("completed_count", 0)
-        val job = _activeBatchJobs.value[jobId]?.copy(status = status, completed = completed) ?: return null
-        _activeBatchJobs.value = _activeBatchJobs.value + (jobId to job)
-        return job
-    }
-
-    fun queueOffline(operation: PendingOperation) {
-        offlineQueue.add(operation)
-    }
-
-    suspend fun syncOfflineQueue() {
-        if (!isOnline()) return
-        val pending = offlineQueue.toList()
-        offlineQueue.clear()
-        for (op in pending) {
-            try { op.execute() } catch (e: Exception) { offlineQueue.add(op) }
-        }
-    }
-
-    private fun isOnline(): Boolean {
-        return try {
-            val cm = appContext?.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return false
-            val network = cm.activeNetwork ?: return false
-            val caps = cm.getNetworkCapabilities(network) ?: return false
-            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-        } catch (e: Exception) { false }
-    }
 }

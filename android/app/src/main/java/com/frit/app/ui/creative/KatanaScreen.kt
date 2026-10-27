@@ -56,11 +56,20 @@ fun KatanaScreen(onClose: () -> Unit = {}, onSubscribe: () -> Unit = {}, onHando
         }
     }
 
+    // Audit fix: these wrote Compose state from the IO dispatcher. Decode on IO,
+    // then assign on Main — otherwise a large video could drop the update (and
+    // the button stayed on "Attach video" after picking a file).
     val vidPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        if (uri != null) scope.launch(Dispatchers.IO) { video = uriToDataUrl(ctx, uri, "video/*") }
+        if (uri != null) scope.launch(Dispatchers.IO) {
+            val data = uriToDataUrl(ctx, uri, "video/*")
+            launch(Dispatchers.Main) { video = data }
+        }
     }
     val audPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        if (uri != null) scope.launch(Dispatchers.IO) { audio = uriToDataUrl(ctx, uri, "audio/*") }
+        if (uri != null) scope.launch(Dispatchers.IO) {
+            val data = uriToDataUrl(ctx, uri, "audio/*")
+            launch(Dispatchers.Main) { audio = data }
+        }
     }
 
     Scaffold(

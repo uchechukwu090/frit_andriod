@@ -2,6 +2,8 @@ package com.frit.app.ui.creative
 
 import com.frit.app.ui.creative.components.MIME_IMAGE
 import com.frit.app.ui.creative.components.normalizeMediaUrl
+import com.frit.app.ui.creative.components.sniffBareBase64Mime
+import com.frit.app.features.creative.strList
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
@@ -23,7 +25,7 @@ import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
 
-data class GfxTemplate(val id: String, val name: String, val aspect: String)
+data class GfxTemplate(val id: String, val name: String, val aspect: String, val zones: List<String> = emptyList())
 data class BrandKitRef(val id: String, val name: String)
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
@@ -63,8 +65,11 @@ fun DesignStudioScreen(onClose: () -> Unit = {}, onHandoff: (String) -> Unit = {
     // agent took, and how far it pushed the brief away from the references.
     var studiedRefs by remember { mutableStateOf<List<String>>(emptyList()) }
     var agentTrail by remember { mutableStateOf("") }
+    // The design model decides which aspect ratios can actually be rendered.
+    var caps by remember { mutableStateOf(engine.cachedCapabilities() ?: com.frit.app.features.creative.CreativeCapabilities.FALLBACK) }
 
     LaunchedEffect(Unit) {
+        caps = engine.capabilities()
         engine.takeHandoff()?.let { (m, k) ->
             if (k == "image" && m.isNotBlank() && logo == null) {
                 logo = m
@@ -95,7 +100,12 @@ fun DesignStudioScreen(onClose: () -> Unit = {}, onHandoff: (String) -> Unit = {
             val arr = t.optJSONArray("templates") ?: JSONArray()
             templates = (0 until arr.length()).map { i ->
                 val o = arr.getJSONObject(i)
-                GfxTemplate(o.optString("id"), o.optString("name"), o.optString("aspect_ratio"))
+                GfxTemplate(
+                    o.optString("id"),
+                    o.optString("name"),
+                    o.optString("aspect_ratio"),
+                    strList(o.optJSONArray("zones"))
+                )
             }
             val k = JSONObject(NetworkClient.getBrandKits())
             val karr = k.optJSONArray("brandkits") ?: JSONArray()
@@ -171,43 +181,93 @@ fun DesignStudioScreen(onClose: () -> Unit = {}, onHandoff: (String) -> Unit = {
                     FilterChip(selected = craft == id, onClick = { craft = id }, label = { Text(label) })
                 }
             }
-            Text("Font", style = MaterialTheme.typography.labelMedium)
+            // Fonts are NOT a fixed list: type any font name (e.g. "Space Mono",
+            // "Playfair Display", "Bebas Neue"). The chips are only shortcuts.
+            Text("Font — type any font name, or tap a shortcut", style = MaterialTheme.typography.labelMedium)
+            OutlinedTextField(
+                value = selectedFont, onValueChange = { selectedFont = it },
+                label = { Text("Font name") }, singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
             FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                listOf("Sans Serif", "Serif", "Script", "Display", "Mono").forEach { f ->
-                    FilterChip(selected = selectedFont == f, onClick = { selectedFont = f }, label = { Text(f) })
+                listOf("Sans Serif", "Serif", "Script", "Display", "Mono",
+                    "Space Mono", "Playfair Display", "Bebas Neue", "Syne", "DM Serif Display", "Archivo Black").forEach { f ->
+                    FilterChip(selected = selectedFont.equals(f, ignoreCase = true), onClick = { selectedFont = f }, label = { Text(f) })
                 }
             }
-            Text("Brand color", style = MaterialTheme.typography.labelMedium)
+            // Colours are NOT a fixed list either: type any hex codes (comma
+            // separated, first = main colour). Swatches add/remove a colour.
+            Text("Colours — type hex codes, or tap swatches (first = main)", style = MaterialTheme.typography.labelMedium)
+            val pickedColors = selectedColor.split(",", " ").map { it.trim() }.filter { it.isNotEmpty() }
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 listOf("#362F2F", "#EBE8E0", "#4A7C59", "#9C3A2F", "#1A1A2E", "#D4A574").forEach { c ->
+                    val on = pickedColors.any { it.equals(c, ignoreCase = true) }
                     Surface(
-                        modifier = Modifier.size(32.dp),
+                        modifier = Modifier.size(if (on) 38.dp else 32.dp),
                         color = androidx.compose.ui.graphics.Color(android.graphics.Color.parseColor(c)),
                         shape = MaterialTheme.shapes.small,
-                        onClick = { selectedColor = c }
+                        border = if (on) androidx.compose.foundation.BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else null,
+                        onClick = {
+                            val next = if (on) pickedColors.filter { !it.equals(c, ignoreCase = true) } else (pickedColors + c).takeLast(5)
+                            selectedColor = next.joinToString(", ")
+                        }
                     ) {}
                 }
-                OutlinedTextField(
-                    value = selectedColor, onValueChange = { selectedColor = it },
-                    label = { Text("Hex") }, modifier = Modifier.width(120.dp)
-                )
             }
+            OutlinedTextField(
+                value = selectedColor, onValueChange = { selectedColor = it },
+                label = { Text("Hex colours, e.g. #0E3B2E, #F4EFE4, #D4A574") },
+                modifier = Modifier.fillMaxWidth()
+            )
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = { moodPicker.launch("image/*") }, modifier = Modifier.weight(1f)) {
+                OutlinedButton(onClick = { moodPicker.launch("image/*") }, enabled = caps.design.reference, modifier = Modifier.weight(1f)) {
                     Icon(Icons.Default.Image, null); Spacer(Modifier.width(6.dp)); Text("Mood-board (${styleRefs.size}/4)")
                 }
                 OutlinedTextField(value = variations, onValueChange = { variations = it.filter(Char::isDigit).take(1) }, label = { Text("Routes") }, modifier = Modifier.weight(1f), placeholder = { Text("1-3") })
             }
-            if (styleRefs.isNotEmpty()) TextButton(onClick = { styleRefs = emptyList() }) { Text("Clear mood-board") }
+            if (!caps.design.reference) {
+                Text(
+                    "${caps.design.label.ifBlank { caps.design.model }} can't take image inputs, so Mood-board and Logo are switched off.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            if (styleRefs.isNotEmpty()) {
+                Text(
+                    "Mood-board: ${styleRefs.size}/4 images. The agent studies these for layout, colour and typography ideas — it does NOT copy them. Pinterest/Behance images can still be skipped if their host blocks server access.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                TextButton(onClick = { styleRefs = emptyList() }) { Text("Clear mood-board") }
+            }
             Text("Template", style = MaterialTheme.typography.labelMedium)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 templates.forEach { t ->
                     FilterChip(selected = template == t.id, onClick = { template = if (template == t.id) null else t.id }, label = { Text("${t.name} • ${t.aspect}") })
                 }
+            }
+            // Be explicit when the chosen template's ratio is not one the active
+            // model renders: say what it WILL render instead of letting the
+            // server snap it invisibly.
+            val selTpl = templates.find { it.id == template }
+            val renderedAspect = caps.design.pickAspect(selTpl?.aspect ?: "1:1") ?: "1:1"
+            if (selTpl != null && !caps.design.supportsAspect(selTpl.aspect)) {
+                Text(
+                    "${caps.design.label.ifBlank { caps.design.model }} renders $renderedAspect — " +
+                        "this template's ${selTpl.aspect} will come out at $renderedAspect.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else if (caps.design.summary.isNotBlank()) {
+                Text(
+                    "Model: ${caps.design.label.ifBlank { caps.design.model }} — ${caps.design.summary}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Checkbox(checked = useCustomBrief, onCheckedChange = { useCustomBrief = it })
@@ -227,7 +287,7 @@ fun DesignStudioScreen(onClose: () -> Unit = {}, onHandoff: (String) -> Unit = {
                 OutlinedTextField(value = palette, onValueChange = { palette = it }, label = { Text("Grade") }, modifier = Modifier.weight(1f))
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = { logoPicker.launch("image/*") }, modifier = Modifier.weight(1f)) {
+                OutlinedButton(onClick = { logoPicker.launch("image/*") }, enabled = caps.design.reference, modifier = Modifier.weight(1f)) {
                     Icon(Icons.Default.Image, null); Spacer(Modifier.width(6.dp))
                     Text(if (logo == null) "Logo (optional)" else "Logo ✓")
                 }
@@ -283,10 +343,20 @@ fun DesignStudioScreen(onClose: () -> Unit = {}, onHandoff: (String) -> Unit = {
                         if (agentMode) {
                             try {
                                 val goalText = (if (useCustomBrief) customBrief else headline).ifBlank { "graphic design" }
-                                val selAspect = templates.find { it.id == template }?.aspect ?: "1:1"
+                                val selTpl = templates.find { it.id == template }
+                                val selAspect = caps.design.pickAspect(selTpl?.aspect ?: "1:1") ?: "1:1"
+                                // When using the free brief, send it as the agent's headline
+                                // so the brief writer can MUST-USE it rather than guessing from
+                                // the goal text alone. When using helper fields, send headline
+                                // normally.
+                                val agentHeadline = if (useCustomBrief) customBrief else headline.ifBlank { null }
+                                // The user's own images go to the agent as references too —
+                                // but only when the model takes image input at all.
+                                val agentRefs = JSONArray()
+                                if (caps.design.reference) styleRefs.forEach { agentRefs.put(it) }
                                 val r = JSONObject(NetworkClient.designAgent(
                                     goal = goalText,
-                                    headline = if (useCustomBrief) null else headline.ifBlank { null },
+                                    headline = agentHeadline,
                                     body = if (useCustomBrief) null else body.ifBlank { null },
                                     cta = if (useCustomBrief) null else cta.ifBlank { null },
                                     palette = if (palette.isNotBlank()) palette else selectedColor,
@@ -294,30 +364,73 @@ fun DesignStudioScreen(onClose: () -> Unit = {}, onHandoff: (String) -> Unit = {
                                     aspectRatio = selAspect,
                                     font = selectedFont,
                                     inspiration = true,
-                                    verify = true
+                                    verify = true,
+                                    template = selTpl?.id,
+                                    styleRefs = agentRefs.takeIf { it.length() > 0 },
+                                    logoUrl = if (caps.design.reference) logo else null,
+                                    // The free-brief text is a DESCRIPTION of the piece,
+                                    // not the copy to typeset — say so, or the agent sets
+                                    // the whole paragraph as the headline.
+                                    freeBrief = useCustomBrief
                                 ))
                                 val bref = r.optJSONObject("brief")
                                 val lay = bref?.optJSONObject("layout")
                                 val pal = bref?.optJSONArray("palette")
                                 val typo = bref?.optJSONArray("typography")
                                 val refsRead = r.optJSONObject("inspiration")?.optInt("read") ?: 0
+                                val refsStudied = r.optJSONObject("inspiration")?.optJSONArray("studied")
+                                val refsDropped = r.optJSONObject("inspiration")?.optJSONArray("dropped")
+                                val studiedDetail = buildString {
+                                    append("References read: $refsRead")
+                                    appendLine()
+                                    if (refsStudied != null && refsStudied.length() > 0) {
+                                        append("Studied refs: ")
+                                        appendLine((0 until refsStudied.length()).joinToString(", ") {
+                                            val o = refsStudied.getJSONObject(it)
+                                            o.optString("ref", o.optString("image_url", "—"))
+                                        })
+                                    }
+                                    if (refsDropped != null && refsDropped.length() > 0) {
+                                        append("Dropped: ")
+                                        appendLine((0 until refsDropped.length()).joinToString(", ") {
+                                            val o = refsDropped.getJSONObject(it)
+                                            o.optString("ref", o.optString("image_url", "—"))
+                                        })
+                                    }
+                                }.trim()
                                 briefLines = buildString {
-                                    if (lay != null) append("Layout: ${lay.optString("grid")} • ${lay.optString("alignment")} • focal ${lay.optString("focal")}\n")
+                                    if (selTpl != null) {
+                                        append("Template: ${selTpl.name}")
+                                        if (selTpl.zones.isNotEmpty()) {
+                                            appendLine()
+                                            append("Template zones: ${selTpl.zones.joinToString(" • ")}")
+                                        } else {
+                                            appendLine()
+                                            append("Template zones: none declared")
+                                        }
+                                    }
+                                    if (lay != null) {
+                                        appendLine()
+                                        append("Layout: ${lay.optString("grid")} • ${lay.optString("alignment")} • focal ${lay.optString("focal")}")
+                                    }
                                     if (pal != null) {
+                                        appendLine()
                                         append("Palette: ")
                                         for (i in 0 until pal.length()) {
                                             val p = pal.optJSONObject(i) ?: continue
                                             append("${p.optString("hex")} ${p.optInt("share_pct")}%  ")
                                         }
-                                        append("\n")
                                     }
                                     if (typo != null) {
+                                        appendLine()
                                         for (i in 0 until typo.length()) {
                                             val t = typo.optJSONObject(i) ?: continue
-                                            append("${t.optString("role")}: ${t.optString("font")} ${t.optInt("size_px")}px\n")
+                                            append("${t.optString("role")}: ${t.optString("font")} ${t.optInt("size_px")}px")
+                                            appendLine()
                                         }
                                     }
-                                    append("References read: $refsRead")
+                                    appendLine()
+                                    append(studiedDetail)
                                 }.trim()
                                 // Week 7 trail: the style route, the divergence
                                 // from the references and the reference images.
@@ -338,10 +451,12 @@ fun DesignStudioScreen(onClose: () -> Unit = {}, onHandoff: (String) -> Unit = {
                                 }.trim()
                                 val rr = r.optJSONObject("render")
                                 val src = rr?.strOrNull("image_url") ?: rr?.strOrNull("image_b64")
-                                // The model decides the bytes: Recraft hands back
-                                // webp, Seedream png. Wrapping a webp payload in
-                                // a data:image/png URI shows nothing.
-                                val mime = rr?.optString("media_type")?.takeIf { it.isNotBlank() } ?: MIME_IMAGE
+                                // The server now returns the real media_type and the client
+                                // sniffs bare base64 bytes, so webp/png/svg renders no longer
+                                // get wrapped as image/png and show blank.
+                                val mime = rr?.optString("media_type")?.takeIf { it.isNotBlank() }
+                                    ?: sniffBareBase64Mime(src)
+                                    ?: MIME_IMAGE
                                 val url: String? = normalizeMediaUrl(src, mime)
                                 val v = r.optJSONObject("verification")
                                 val issues = v?.optJSONArray("issues")
@@ -359,12 +474,12 @@ fun DesignStudioScreen(onClose: () -> Unit = {}, onHandoff: (String) -> Unit = {
                             return@launch
                         }
                         try {
-                            val refs = JSONArray(); styleRefs.forEach { refs.put(it) }
+                            val refs = JSONArray(); if (caps.design.reference) styleRefs.forEach { refs.put(it) }
                             val effHeadline = if (useCustomBrief) customBrief else headline
                             val selTemplate = templates.find { it.id == template }
-                            val effAspect = selTemplate?.aspect ?: "1:1"
+                            val effAspect = caps.design.pickAspect(selTemplate?.aspect ?: "1:1") ?: "1:1"
                             val effPalette = if (palette.isNotBlank()) palette else selectedColor
-                            val r = JSONObject(NetworkClient.design(template, effHeadline, if (useCustomBrief) null else body.ifBlank { null }, if (useCustomBrief) null else cta.ifBlank { null }, effPalette, kitId, logo, craft, refs, variations.toIntOrNull() ?: 2, effAspect, selectedFont))
+                            val r = JSONObject(NetworkClient.design(template, effHeadline, if (useCustomBrief) null else body.ifBlank { null }, if (useCustomBrief) null else cta.ifBlank { null }, effPalette, kitId, if (caps.design.reference) logo else null, craft, refs, variations.toIntOrNull() ?: 2, effAspect, selectedFont))
                             craftUsed = r.optString("craft")
                             val arr = r.optJSONArray("designs") ?: JSONArray()
                             results = (0 until arr.length()).map { i ->

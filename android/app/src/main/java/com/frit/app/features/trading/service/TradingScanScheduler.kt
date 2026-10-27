@@ -6,6 +6,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import com.frit.app.features.trading.model.ScanResult
 import com.frit.app.features.trading.repository.TradingRepository
 import com.frit.app.features.trading.service.TradingEngineClient
 import kotlinx.coroutines.CoroutineScope
@@ -58,9 +59,15 @@ class TradingScanReceiver : BroadcastReceiver() {
         }
         val pending = goAsync()
         CoroutineScope(Dispatchers.IO).launch {
+            // Capture the enabled watchlist once so every scan in this run uses
+            // the same filter — a pair removed mid-run still won't reappear.
+            val watchlistSymbols = TradingCache.loadWatchlist().filter { it.isEnabled }.map { it.symbol }
             try {
-                // 1. scan watchlist
-                when (val r = TradingRepository.scan()) {
+                // 1. scan only the enabled watchlist so a removed pair stops
+                //    producing signals immediately (the server is told via
+                //    removeWatch, but the scanner itself must also filter).
+                when (val r = if (watchlistSymbols.isNotEmpty()) TradingRepository.scan(watchlistSymbols)
+                              else TradingRepository.Result.Ok(ScanResult(emptyList(), System.currentTimeMillis()))) {
                     is TradingRepository.Result.Ok -> {
                         val seenKey = "seen_signal_ids"
                         val seen = (TradingCache.getJson(seenKey) ?: "").split(",").toMutableSet()
@@ -73,16 +80,17 @@ class TradingScanReceiver : BroadcastReceiver() {
                 }
                 // 2. Options suite: equity credit spreads + FX expected-move levels.
                 // Signal-only endpoints; each new signal id fires one floating banner.
+                // Only scan the pairs still in the watchlist (default list when empty).
                 try {
                     val seenOpt = ((TradingCache.getJson("seen_options_ids") ?: "").split(",")).toMutableSet()
-                    when (val r = TradingRepository.optionsScan()) {
+                    when (val r = TradingRepository.optionsScan(watchlistSymbols.takeIf { it.isNotEmpty() } ?: listOf("EURUSD", "GBPUSD", "XAUUSD"))) {
                         is TradingRepository.Result.Ok -> {
                             r.value.filter { seenOpt.add(it.id) }
                                 .forEach { SignalNotificationManager.optionsSignal(ctx, it) }
                         }
                         is TradingRepository.Result.Err -> { /* offline: keep quiet */ }
                     }
-                    when (val r = TradingRepository.optionsFxScan()) {
+                    when (val r = TradingRepository.optionsFxScan(watchlistSymbols.takeIf { it.isNotEmpty() } ?: listOf("EURUSD", "GBPUSD", "XAUUSD"))) {
                         is TradingRepository.Result.Ok -> {
                             r.value.filter { seenOpt.add(it.id) }
                                 .forEach { SignalNotificationManager.optionsSignal(ctx, it) }

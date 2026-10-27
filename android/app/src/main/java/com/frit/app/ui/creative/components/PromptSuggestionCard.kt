@@ -39,8 +39,11 @@ fun PromptSuggestionCard(
             )
             if (suggestion.stylePreset != null) {
                 Spacer(modifier = Modifier.height(4.dp))
+                // Audit fix: this chip had `onClick = {}` — a tappable control
+                // that did nothing. It now applies the suggestion like the card
+                // does, so the style preset is never a dead button.
                 SuggestionChip(
-                    onClick = {},
+                    onClick = { onUse(suggestion) },
                     label = { Text(suggestion.stylePreset) }
                 )
             }

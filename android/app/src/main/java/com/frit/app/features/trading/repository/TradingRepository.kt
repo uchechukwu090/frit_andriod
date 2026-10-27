@@ -102,6 +102,15 @@ object TradingRepository {
         }
     }
 
+    /** Scan only the symbols currently in the local watchlist.
+     *  Used by the background scanner so removed pairs stop producing signals
+     *  even if the server would otherwise still return them. */
+    suspend fun scanWatchlist(): Result<ScanResult> = withContext(Dispatchers.IO) {
+        val items = TradingCache.loadWatchlist().filter { it.isEnabled }
+        if (items.isEmpty()) return@withContext Result.Ok(ScanResult(emptyList(), System.currentTimeMillis()))
+        scan(items.map { it.symbol })
+    }
+
     suspend fun signals(symbol: String? = null, favoritesOnly: Boolean = false): Result<List<TradingSignal>> =
         withContext(Dispatchers.IO) {
             try {
@@ -233,6 +242,38 @@ object TradingRepository {
         catch (e: Exception) { Result.Err(e.friendly()) }
     }
 
+    suspend fun performanceRecommendations(market: String = "ALL", type: String = "ALL"): Result<List<MarketRecommendation>> =
+        withContext(Dispatchers.IO) {
+            try {
+                val recs = TradingEngineClient.getPerformanceRecommendations(market, type)
+                Result.Ok(recs)
+            } catch (e: Exception) { Result.Err(e.friendly()) }
+        }
+
+    suspend fun newsCalendar(impact: String = "ALL", currency: String = "ALL"): Result<Pair<List<MarketNewsItem>, List<MarketNewsItem>>> =
+        withContext(Dispatchers.IO) {
+            try {
+                val cal = TradingEngineClient.getNewsCalendar(impact, currency)
+                Result.Ok(cal)
+            } catch (e: Exception) { Result.Err(e.friendly()) }
+        }
+
+    suspend fun recentSignals(limit: Int = 30): Result<List<TradingSignal>> =
+        withContext(Dispatchers.IO) {
+            try {
+                val sigs = TradingEngineClient.getRecentSignals(limit)
+                if (sigs.isNotEmpty()) {
+                    val merged = (sigs + TradingCache.loadSignals()).distinctBy { it.id }.sortedByDescending { it.timestamp }.take(200)
+                    TradingCache.saveSignals(merged)
+                }
+                Result.Ok(sigs)
+            } catch (e: Exception) {
+                val cached = TradingCache.loadSignals().take(limit)
+                if (cached.isNotEmpty()) Result.Ok(cached, fromCache = true)
+                else Result.Err(e.friendly())
+            }
+        }
+
     suspend fun learning(category: String? = null): Result<List<LearningContent>> = withContext(Dispatchers.IO) {
         try {
             val items = TradingEngineClient.learning(category)
@@ -334,10 +375,11 @@ object TradingRepository {
 
     suspend fun saveBotPair(botName: String, pair: String, timeframe: String,
                            tradeEnabled: Boolean, signalEnabled: Boolean,
-                           minConfidence: Int, maxTradesDay: Int): Result<BotPairConfig> =
+                           minConfidence: Int, maxTradesDay: Int,
+                           positionsPerSignal: Int = 1): Result<BotPairConfig> =
         withContext(Dispatchers.IO) {
             try {
-                val item = TradingEngineClient.saveBotPair(botName, pair, timeframe, tradeEnabled, signalEnabled, minConfidence, maxTradesDay)
+                val item = TradingEngineClient.saveBotPair(botName, pair, timeframe, tradeEnabled, signalEnabled, minConfidence, maxTradesDay, positionsPerSignal)
                 botPairs() // refresh the persisted copy
                 Result.Ok(item)
             } catch (e: Exception) { Result.Err(e.friendly()) }
@@ -373,6 +415,9 @@ object TradingRepository {
     suspend fun saveAccount(
         balance: Double? = null,
         riskProfile: String? = null,
+        lotMode: String? = null,
+        fixedLot: Double? = null,
+        positionsPerSignal: Int? = null,
         derivToken: String? = null,
         derivTokenMode: String? = null,
         mt5Server: String? = null,
@@ -382,8 +427,8 @@ object TradingRepository {
     ): Result<TradingAccount> = withContext(Dispatchers.IO) {
         try {
             val acc = TradingEngineClient.saveAccount(
-                balance, riskProfile, derivToken, derivTokenMode,
-                mt5Server, mt5Login, mt5Password, mt5Broker
+                balance, riskProfile, lotMode, fixedLot, positionsPerSignal,
+                derivToken, derivTokenMode, mt5Server, mt5Login, mt5Password, mt5Broker
             )
             TradingCache.saveAccount(acc)
             Result.Ok(acc)

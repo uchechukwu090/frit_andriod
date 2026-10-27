@@ -230,6 +230,96 @@ object TradingEngineClient {
         return out
     }
 
+    suspend fun getPerformanceRecommendations(market: String = "ALL", type: String = "ALL"): List<MarketRecommendation> {
+        val path = "/api/trading/recommendations?market=${java.net.URLEncoder.encode(market, "UTF-8")}&type=${java.net.URLEncoder.encode(type, "UTF-8")}"
+        val res = get(path)
+        val out = mutableListOf<MarketRecommendation>()
+        res.optJSONArray("recommendations")?.let { arr ->
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                out += MarketRecommendation(
+                    symbol = o.optString("symbol"),
+                    name = o.optString("name", o.optString("symbol")),
+                    market = o.optString("market", "FX"),
+                    type = o.optString("type", "TRADE"),
+                    horizon = o.optString("horizon", "Swing Trade"),
+                    action = o.optString("action", "BUY"),
+                    grade = o.optString("grade", "A"),
+                    performanceScore = o.optInt("performanceScore", 80),
+                    winRateEst = o.optInt("winRateEst", 65),
+                    currentPrice = o.optDouble("currentPrice", 0.0),
+                    return24h = o.optDouble("return24h", 0.0),
+                    rsi = o.optInt("rsi", 50),
+                    trend = o.optString("trend", "BULLISH"),
+                    entry = o.optDouble("entry", 0.0),
+                    sl = o.optDouble("sl", 0.0),
+                    tp1 = o.optDouble("tp1", 0.0),
+                    tp2 = o.optDouble("tp2", 0.0),
+                    rr = o.optDouble("rr", 2.0),
+                    volatility = o.optString("volatility", "NORMAL"),
+                    reasoning = o.optString("reasoning", ""),
+                    isSynthetic = o.optBoolean("isSynthetic", false),
+                    preferredContract = if (o.isNull("preferredContract")) null else o.optString("preferredContract")
+                )
+            }
+        }
+        return out
+    }
+
+    suspend fun getNewsCalendar(impact: String = "ALL", currency: String = "ALL"): Pair<List<MarketNewsItem>, List<MarketNewsItem>> {
+        val path = "/api/trading/news/calendar?impact=${java.net.URLEncoder.encode(impact, "UTF-8")}&currency=${java.net.URLEncoder.encode(currency, "UTF-8")}"
+        val res = get(path)
+        val upcoming = mutableListOf<MarketNewsItem>()
+        val previous = mutableListOf<MarketNewsItem>()
+
+        fun parseItem(o: JSONObject): MarketNewsItem {
+            val affectedList = mutableListOf<String>()
+            o.optJSONArray("affectedPairs")?.let { arr ->
+                for (j in 0 until arr.length()) {
+                    val p = arr.optString(j)
+                    if (p.isNotBlank()) affectedList.add(p)
+                }
+            }
+            return MarketNewsItem(
+                id = o.optString("id"),
+                title = o.optString("title"),
+                currency = o.optString("currency", "USD"),
+                date = o.optString("date"),
+                time = o.optLong("time", System.currentTimeMillis()),
+                impact = o.optString("impact", "MEDIUM"),
+                forecast = o.optString("forecast", "-"),
+                previous = o.optString("previous", "-"),
+                actual = if (o.isNull("actual")) null else o.optString("actual"),
+                isUpcoming = o.optBoolean("isUpcoming", false),
+                outcome = if (o.isNull("outcome")) null else o.optString("outcome"),
+                variance = if (o.isNull("variance")) null else o.optString("variance"),
+                bias = if (o.isNull("bias")) null else o.optString("bias"),
+                volatilityRating = if (o.isNull("volatilityRating")) null else o.optString("volatilityRating"),
+                marketAnalysis = if (o.isNull("marketAnalysis")) null else o.optString("marketAnalysis"),
+                affectedPairs = affectedList
+            )
+        }
+
+        res.optJSONArray("upcoming")?.let { arr ->
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                upcoming += parseItem(o)
+            }
+        }
+        res.optJSONArray("previous")?.let { arr ->
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                previous += parseItem(o)
+            }
+        }
+        return upcoming to previous
+    }
+
+    suspend fun getRecentSignals(limit: Int = 30): List<TradingSignal> {
+        val res = get("/api/trading/signals/recent?limit=$limit")
+        return res.optJSONArray("signals")?.toSignals() ?: emptyList()
+    }
+
     suspend fun learning(category: String? = null): List<LearningContent> {
         val res = get(if (category != null) "/api/trading/learning?category=$category" else "/api/trading/learning")
         val out = mutableListOf<LearningContent>()
@@ -394,15 +484,12 @@ object TradingEngineClient {
             for (i in 0 until arr.length()) {
                 val o = arr.optJSONObject(i) ?: continue
                 out += BotPairConfig(
-                    id = o.optLong("id", 0),
-                    userId = o.optString("userId", ""),
-                    botName = o.optString("botName", ""),
-                    pair = o.optString("pair", ""),
-                    timeframe = o.optString("timeframe", ""),
-                    tradeEnabled = o.optBoolean("tradeEnabled", false),
+                    id = o.optLong("id", 0), userId = o.optString("userId", ""),
+                    botName = o.optString("botName", ""), pair = o.optString("pair", ""),
+                    timeframe = o.optString("timeframe", ""), tradeEnabled = o.optBoolean("tradeEnabled", false),
                     signalEnabled = o.optBoolean("signalEnabled", true),
-                    minConfidence = o.optInt("minConfidence", 60),
-                    maxTradesDay = o.optInt("maxTradesDay", 2)
+                    minConfidence = o.optInt("minConfidence", 60), maxTradesDay = o.optInt("maxTradesDay", 2),
+                    positionsPerSignal = o.optInt("positionsPerSignal", 1).coerceIn(1, 10)
                 )
             }
         }
@@ -411,19 +498,22 @@ object TradingEngineClient {
 
     suspend fun saveBotPair(botName: String, pair: String, timeframe: String,
                            tradeEnabled: Boolean, signalEnabled: Boolean,
-                           minConfidence: Int, maxTradesDay: Int): BotPairConfig {
+                           minConfidence: Int, maxTradesDay: Int,
+                           positionsPerSignal: Int = 1): BotPairConfig {
         val res = post("/api/trading/bot-pairs", JSONObject()
             .put("botName", botName).put("pair", pair.uppercase())
             .put("timeframe", timeframe).put("tradeEnabled", tradeEnabled)
             .put("signalEnabled", signalEnabled).put("minConfidence", minConfidence)
-            .put("maxTradesDay", maxTradesDay))
+            .put("maxTradesDay", maxTradesDay)
+            .put("positionsPerSignal", positionsPerSignal))
         val o = res.optJSONObject("item") ?: throw TradingApiException("save failed")
         return BotPairConfig(
             id = o.optLong("id", 0), userId = o.optString("userId", ""),
             botName = o.optString("botName", ""), pair = o.optString("pair", ""),
             timeframe = o.optString("timeframe", ""), tradeEnabled = o.optBoolean("tradeEnabled", false),
             signalEnabled = o.optBoolean("signalEnabled", true),
-            minConfidence = o.optInt("minConfidence", 60), maxTradesDay = o.optInt("maxTradesDay", 2)
+            minConfidence = o.optInt("minConfidence", 60), maxTradesDay = o.optInt("maxTradesDay", 2),
+            positionsPerSignal = o.optInt("positionsPerSignal", 1).coerceIn(1, 10)
         )
     }
 
@@ -478,6 +568,9 @@ object TradingEngineClient {
             userId = o.optString("userId", ""),
             balance = o.optDouble("balance", 1000.0),
             riskProfile = o.optString("riskProfile", "MODERATE"),
+            lotMode = o.optString("lotMode", "AUTO").uppercase(),
+            fixedLot = o.optDouble("fixedLot", 0.01),
+            positionsPerSignal = o.optInt("positionsPerSignal", 1).coerceIn(1, 10),
             hasDerivToken = o.optBoolean("hasDerivToken", false),
             derivTokenMode = o.optString("derivTokenMode", "platform"),
             hasMt5 = o.optBoolean("hasMt5", false),
@@ -490,6 +583,9 @@ object TradingEngineClient {
     suspend fun saveAccount(
         balance: Double? = null,
         riskProfile: String? = null,
+        lotMode: String? = null,
+        fixedLot: Double? = null,
+        positionsPerSignal: Int? = null,
         derivToken: String? = null,
         derivTokenMode: String? = null,
         mt5Server: String? = null,
@@ -500,6 +596,9 @@ object TradingEngineClient {
         val body = JSONObject()
         if (balance != null) body.put("balance", balance)
         if (riskProfile != null) body.put("riskProfile", riskProfile)
+        if (lotMode != null) body.put("lotMode", lotMode)
+        if (fixedLot != null) body.put("fixedLot", fixedLot)
+        if (positionsPerSignal != null) body.put("positionsPerSignal", positionsPerSignal)
         if (derivToken != null) body.put("derivToken", derivToken)
         if (derivTokenMode != null) body.put("derivTokenMode", derivTokenMode)
         if (mt5Server != null) body.put("mt5Server", mt5Server)
@@ -512,6 +611,9 @@ object TradingEngineClient {
             userId = o.optString("userId", ""),
             balance = o.optDouble("balance", 1000.0),
             riskProfile = o.optString("riskProfile", "MODERATE"),
+            lotMode = o.optString("lotMode", "AUTO").uppercase(),
+            fixedLot = o.optDouble("fixedLot", 0.01),
+            positionsPerSignal = o.optInt("positionsPerSignal", 1).coerceIn(1, 10),
             hasDerivToken = o.optBoolean("hasDerivToken", false),
             derivTokenMode = o.optString("derivTokenMode", "platform"),
             hasMt5 = o.optBoolean("hasMt5", false),

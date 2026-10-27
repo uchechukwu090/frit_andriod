@@ -78,6 +78,40 @@ class TradingUiState {
     var onOpenWallet by mutableStateOf<(() -> Unit)?>(null)
     // Full trade detail behind a tapped notification.
     var detailNotification by mutableStateOf<BotNotification?>(null)
+    // Performance recommendations across FX, Crypto, Stocks, Indices, Synthetics
+    var marketRecommendations by mutableStateOf<List<MarketRecommendation>>(emptyList())
+    var selectedRecMarket by mutableStateOf("ALL")
+    var selectedRecType by mutableStateOf("ALL")
+    var selectedRecommendation by mutableStateOf<MarketRecommendation?>(null)
+    // Economic Forex News Calendar & Historical Analysis
+    var upcomingNews by mutableStateOf<List<MarketNewsItem>>(emptyList())
+    var previousNews by mutableStateOf<List<MarketNewsItem>>(emptyList())
+    var newsMode by mutableStateOf("UPCOMING") // UPCOMING or PREVIOUS
+    var selectedNewsImpact by mutableStateOf("ALL")
+    var selectedNewsItem by mutableStateOf<MarketNewsItem?>(null)
+    // Recent signals gotten across the system
+    var recentSignalsList by mutableStateOf<List<TradingSignal>>(emptyList())
+
+    fun refreshRecommendations(scope: CoroutineScope) {
+        scope.launch(Dispatchers.IO) {
+            when (val r = TradingRepository.performanceRecommendations(selectedRecMarket, selectedRecType)) {
+                is TradingRepository.Result.Ok -> launch(Dispatchers.Main) { marketRecommendations = r.value }
+                is TradingRepository.Result.Err -> launch(Dispatchers.Main) { error = r.message }
+            }
+        }
+    }
+
+    fun refreshNews(scope: CoroutineScope) {
+        scope.launch(Dispatchers.IO) {
+            when (val r = TradingRepository.newsCalendar(selectedNewsImpact)) {
+                is TradingRepository.Result.Ok -> launch(Dispatchers.Main) {
+                    upcomingNews = r.value.first
+                    previousNews = r.value.second
+                }
+                is TradingRepository.Result.Err -> launch(Dispatchers.Main) { error = r.message }
+            }
+        }
+    }
 
     fun load(scope: CoroutineScope, what: String = "all") {
         scope.launch(Dispatchers.IO) {
@@ -108,6 +142,23 @@ class TradingUiState {
                         is TradingRepository.Result.Ok -> launch(Dispatchers.Main) { riskJson = r.value }
                         is TradingRepository.Result.Err -> setErr(r.message)
                     }
+                if (what == "all" || what == "dashboard" || what == "recommendations") {
+                    when (val r = TradingRepository.performanceRecommendations(selectedRecMarket, selectedRecType)) {
+                        is TradingRepository.Result.Ok -> launch(Dispatchers.Main) { marketRecommendations = r.value }
+                        is TradingRepository.Result.Err -> setErr(r.message)
+                    }
+                    when (val r = TradingRepository.newsCalendar(selectedNewsImpact)) {
+                        is TradingRepository.Result.Ok -> launch(Dispatchers.Main) {
+                            upcomingNews = r.value.first
+                            previousNews = r.value.second
+                        }
+                        is TradingRepository.Result.Err -> setErr(r.message)
+                    }
+                    when (val r = TradingRepository.recentSignals(30)) {
+                        is TradingRepository.Result.Ok -> launch(Dispatchers.Main) { recentSignalsList = r.value }
+                        is TradingRepository.Result.Err -> setErr(r.message)
+                    }
+                }
             } finally {
                 launch(Dispatchers.Main) { loading = false }
             }
@@ -359,56 +410,723 @@ private fun tabIcon(t: TradingTab) = when (t) {
 }
 
 // ================= Dashboard =================
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun DashboardScreen(ui: TradingUiState, scope: CoroutineScope) {
     val ctx = LocalContext.current
-    LazyColumn(Modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+
+    // Dialog for recommendation details
+    ui.selectedRecommendation?.let { rec ->
+        AlertDialog(
+            onDismissRequest = { ui.selectedRecommendation = null },
+            confirmButton = {
+                TextButton(onClick = { ui.selectedRecommendation = null }) { Text("Close") }
+            },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("${rec.symbol}  ·  ${rec.grade}", fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.weight(1f))
+                    Surface(
+                        color = when {
+                            rec.action.contains("BUY") || rec.action.contains("RISE") -> FritPositive.copy(alpha = 0.18f)
+                            rec.action.contains("SELL") || rec.action.contains("FALL") -> FritNegative.copy(alpha = 0.18f)
+                            else -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
+                        },
+                        shape = MaterialTheme.shapes.small
+                    ) {
+                        Text(
+                            text = rec.action,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = when {
+                                rec.action.contains("BUY") || rec.action.contains("RISE") -> FritPositive
+                                rec.action.contains("SELL") || rec.action.contains("FALL") -> FritNegative
+                                else -> MaterialTheme.colorScheme.primary
+                            },
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                        )
+                    }
+                }
+            },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(rec.name, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("Performance Score", style = MaterialTheme.typography.bodySmall)
+                        Text("${rec.performanceScore}/100", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                    }
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("24h Return / Bias", style = MaterialTheme.typography.bodySmall)
+                        Text(
+                            "${if (rec.return24h >= 0) "+" else ""}${"%.2f".format(rec.return24h)}%",
+                            fontWeight = FontWeight.Bold,
+                            color = if (rec.return24h >= 0) FritPositive else FritNegative
+                        )
+                    }
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("Win Rate Edge", style = MaterialTheme.typography.bodySmall)
+                        Text("~${rec.winRateEst}% (backtested)", fontWeight = FontWeight.SemiBold)
+                    }
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("RSI (14)", style = MaterialTheme.typography.bodySmall)
+                        Text("${rec.rsi}", fontWeight = FontWeight.SemiBold)
+                    }
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("Risk / Reward", style = MaterialTheme.typography.bodySmall)
+                        Text("1 : ${"%.1f".format(rec.rr)}", fontWeight = FontWeight.Bold)
+                    }
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
+                    if (rec.isSynthetic) {
+                        Text("Synthetic Contract", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium)
+                        Text("Recommended Contract: ${rec.preferredContract ?: "Rise/Fall"}", style = MaterialTheme.typography.bodySmall)
+                        Text("Engine Horizon: ${rec.horizon}", style = MaterialTheme.typography.bodySmall)
+                    } else {
+                        Text("Trade Execution Setup", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium)
+                        Text("Entry: ${rec.entry}   |   SL: ${rec.sl}", style = MaterialTheme.typography.bodySmall)
+                        Text("Target 1 (TP): ${rec.tp1}   |   Target 2: ${rec.tp2}", style = MaterialTheme.typography.bodySmall)
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    Text("Quantitative Analysis", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium)
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                        shape = MaterialTheme.shapes.small,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = rec.reasoning,
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.padding(10.dp)
+                        )
+                    }
+                }
+            }
+        )
+    }
+
+    // Dialog for news details
+    ui.selectedNewsItem?.let { item ->
+        AlertDialog(
+            onDismissRequest = { ui.selectedNewsItem = null },
+            confirmButton = { TextButton(onClick = { ui.selectedNewsItem = null }) { Text("Close") } },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.25f),
+                        shape = MaterialTheme.shapes.extraSmall
+                    ) {
+                        Text(
+                            text = item.currency,
+                            fontWeight = FontWeight.Bold,
+                            style = MaterialTheme.typography.labelMedium,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Text(item.title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                }
+            },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("Impact Level", style = MaterialTheme.typography.bodySmall)
+                        Text(
+                            item.impact,
+                            fontWeight = FontWeight.Bold,
+                            color = when (item.impact.uppercase()) {
+                                "HIGH" -> FritNegative
+                                "MEDIUM" -> Color(0xFFB8860B)
+                                else -> FritPositive
+                            }
+                        )
+                    }
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("Release Date & Time", style = MaterialTheme.typography.bodySmall)
+                        Text(item.date.take(16).replace("T", " "), style = MaterialTheme.typography.bodySmall)
+                    }
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("Forecast: ${item.forecast}", style = MaterialTheme.typography.bodySmall)
+                        Text("Previous: ${item.previous}", style = MaterialTheme.typography.bodySmall)
+                        item.actual?.let { Text("Actual: $it", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary) }
+                    }
+                    if (item.outcome != null || item.marketAnalysis != null) {
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
+                        Text("Economic Reaction & Market Impact", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium)
+                        item.outcome?.let {
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("Consensus Outcome", style = MaterialTheme.typography.bodySmall)
+                                Text(
+                                    it,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (it == "BEAT") FritPositive else if (it == "MISSED") FritNegative else MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        }
+                        item.bias?.let {
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("Market Sentiment Bias", style = MaterialTheme.typography.bodySmall)
+                                Text(it, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+                        item.volatilityRating?.let {
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("Volatility Observed", style = MaterialTheme.typography.bodySmall)
+                                Text(it, style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+                        item.marketAnalysis?.let {
+                            Surface(
+                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                                shape = MaterialTheme.shapes.small,
+                                modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
+                            ) {
+                                Text(it, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(10.dp))
+                            }
+                        }
+                    }
+                    if (item.affectedPairs.isNotEmpty()) {
+                        Text("Affected Currency Pairs / Instruments:", fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.labelSmall)
+                        Text(item.affectedPairs.joinToString("  ·  "), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                    }
+                }
+            }
+        )
+    }
+
+    LazyColumn(Modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        // ---- Header Controls ----
         item {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Market overview", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                Spacer(Modifier.weight(1f))
-                Button(onClick = {
-                    scope.launch(Dispatchers.IO) {
-                        launch(Dispatchers.Main) { ui.loading = true }
-                        when (val r = TradingRepository.scan()) {
-                            is TradingRepository.Result.Ok -> {
-                                launch(Dispatchers.Main) {
-                                    ui.lastScanAt = r.value.scannedAt
-                                    val merged = (r.value.signals + ui.signals).distinctBy { it.id }
-                                        .sortedByDescending { it.timestamp }.take(200)
-                                    ui.signals = merged
-                                    r.value.signals.filter { it.decision == SignalDecision.BUY || it.decision == SignalDecision.SELL }
-                                        .forEach { SignalNotificationManager.signalConfirmed(ctx, it) }
+                Column(Modifier.weight(1f)) {
+                    Text("FRIT Market Dashboard", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Text("Multi-Market Intelligence, Economic News & Signals", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                IconButton(onClick = { ui.load(scope, "dashboard") }) {
+                    Icon(Icons.Filled.Refresh, "Refresh All")
+                }
+                Button(
+                    onClick = {
+                        scope.launch(Dispatchers.IO) {
+                            launch(Dispatchers.Main) { ui.loading = true }
+                            when (val r = TradingRepository.scanWatchlist()) {
+                                is TradingRepository.Result.Ok -> {
+                                    launch(Dispatchers.Main) {
+                                        ui.lastScanAt = r.value.scannedAt
+                                        val merged = (r.value.signals + ui.signals).distinctBy { it.id }
+                                            .sortedByDescending { it.timestamp }.take(200)
+                                        ui.signals = merged
+                                        r.value.signals.filter { it.decision == SignalDecision.BUY || it.decision == SignalDecision.SELL }
+                                            .forEach { SignalNotificationManager.signalConfirmed(ctx, it) }
+                                    }
                                 }
+                                is TradingRepository.Result.Err -> launch(Dispatchers.Main) { ui.error = r.message }
                             }
-                            is TradingRepository.Result.Err -> launch(Dispatchers.Main) { ui.error = r.message }
+                            launch(Dispatchers.Main) { ui.loading = false }
                         }
-                        launch(Dispatchers.Main) { ui.loading = false }
-                    }
-                }) { Text(if (ui.loading) "Scanning…" else "Scan now") }
+                    },
+                    modifier = Modifier.padding(start = 4.dp)
+                ) { Text(if (ui.loading) "Scanning…" else "Scan Now") }
             }
-            ui.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            ui.error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
         }
+
+        // ================= SECTION 1: PERFORMANCE RECOMMENDATIONS =================
         item {
-            val s = ui.summary
-            Card(Modifier.fillMaxWidth()) {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                border = CardDefaults.outlinedCardBorder(),
+                modifier = Modifier.fillMaxWidth()
+            ) {
                 Column(Modifier.padding(14.dp)) {
-                    Text("Portfolio", fontWeight = FontWeight.Bold)
-                    Text("Equity: ${fmtMoney(s?.equity)}   P&L: ${fmtMoney(s?.totalPnl)}")
-                    Text("Open: ${s?.totalPositions ?: 0}   Unrealized: ${fmtMoney(s?.unrealizedPnl)}")
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Performance Recommendations", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                        Spacer(Modifier.weight(1f))
+                        Surface(
+                            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.4f),
+                            shape = MaterialTheme.shapes.small
+                        ) {
+                            Text(
+                                "QUANTITATIVE",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
+                    Text(
+                        "Ranked strictly by current performance & momentum across FX, Crypto, Stocks, Indices, and Synthetics (Rise & Fall) — not random picking.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 2.dp, bottom = 8.dp)
+                    )
+
+                    // Market Filter Chips
+                    val markets = listOf("ALL", "FX", "CRYPTO", "STOCKS", "INDICES", "SYNTHETICS")
+                    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        markets.forEach { m ->
+                            val sel = ui.selectedRecMarket == m
+                            FilterChip(
+                                selected = sel,
+                                onClick = {
+                                    ui.selectedRecMarket = m
+                                    ui.refreshRecommendations(scope)
+                                },
+                                label = {
+                                    Text(
+                                        when (m) {
+                                            "FX" -> "Forex (FX)"
+                                            "SYNTHETICS" -> "Synthetics (Rise/Fall)"
+                                            else -> m
+                                        },
+                                        style = MaterialTheme.typography.labelSmall
+                                    )
+                                }
+                            )
+                        }
+                    }
+
+                    // Type Filter Chips
+                    Row(
+                        Modifier.fillMaxWidth().padding(top = 4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        listOf("ALL" to "All Types", "TRADE" to "Trades", "INVEST" to "Investments").forEach { (k, label) ->
+                            val sel = ui.selectedRecType == k
+                            FilterChip(
+                                selected = sel,
+                                onClick = {
+                                    ui.selectedRecType = k
+                                    ui.refreshRecommendations(scope)
+                                },
+                                label = { Text(label, style = MaterialTheme.typography.labelSmall) }
+                            )
+                        }
+                    }
                 }
             }
         }
-        item { Text("Latest signals", fontWeight = FontWeight.Bold) }
-        val actionable = ui.signals.filter { it.decision == SignalDecision.BUY || it.decision == SignalDecision.SELL }.take(5)
-        if (actionable.isEmpty()) item { Text("No BUY/SELL signals yet — add pairs in Watchlist, then Scan.") }
-        items(actionable, key = { it.id }) { SignalCard(it, ui, scope) }
-        item { Text("Watchlist (${ui.watchlist.size})", fontWeight = FontWeight.Bold) }
-        items(ui.watchlist.take(8), key = { it.symbol }) {
-            Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text("${it.symbol}  ·  ${it.assetClass.displayName}")
-                Spacer(Modifier.weight(1f))
-                Text(if (it.isEnabled) "on" else "off", color = MaterialTheme.colorScheme.onSurfaceVariant)
+
+        // List of recommendations
+        val recs = ui.marketRecommendations
+        if (recs.isEmpty()) {
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f))
+                ) {
+                    Column(Modifier.padding(14.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text("Loading performance recommendations across all markets…", style = MaterialTheme.typography.bodySmall)
+                        Spacer(Modifier.height(8.dp))
+                        Button(onClick = { ui.refreshRecommendations(scope) }) { Text("Load Recommendations") }
+                    }
+                }
+            }
+        } else {
+            items(recs.take(10), key = { "${it.symbol}_${it.market}" }) { rec ->
+                Card(
+                    onClick = { ui.selectedRecommendation = rec },
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    border = CardDefaults.outlinedCardBorder(),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(Modifier.padding(12.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(rec.symbol, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                            Spacer(Modifier.width(6.dp))
+                            Surface(
+                                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.2f),
+                                shape = MaterialTheme.shapes.extraSmall
+                            ) {
+                                Text(
+                                    rec.market,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                                )
+                            }
+                            Spacer(Modifier.weight(1f))
+                            // Action badge
+                            Surface(
+                                color = when {
+                                    rec.action.contains("BUY") || rec.action.contains("RISE") -> FritPositive.copy(alpha = 0.16f)
+                                    rec.action.contains("SELL") || rec.action.contains("FALL") -> FritNegative.copy(alpha = 0.16f)
+                                    else -> MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
+                                },
+                                shape = MaterialTheme.shapes.extraSmall
+                            ) {
+                                Text(
+                                    rec.action,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = when {
+                                        rec.action.contains("BUY") || rec.action.contains("RISE") -> FritPositive
+                                        rec.action.contains("SELL") || rec.action.contains("FALL") -> FritNegative
+                                        else -> MaterialTheme.colorScheme.primary
+                                    },
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                            }
+                            Spacer(Modifier.width(6.dp))
+                            Surface(
+                                color = MaterialTheme.colorScheme.surfaceVariant,
+                                shape = MaterialTheme.shapes.extraSmall
+                            ) {
+                                Text(
+                                    rec.grade,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
+
+                        // Metrics row
+                        Row(
+                            Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                "Score ${rec.performanceScore}",
+                                fontWeight = FontWeight.Bold,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Text(
+                                "${if (rec.return24h >= 0) "+" else ""}${"%.2f".format(rec.return24h)}%",
+                                fontWeight = FontWeight.Bold,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (rec.return24h >= 0) FritPositive else FritNegative
+                            )
+                            Text("RSI ${rec.rsi}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("Win ~${rec.winRateEst}%", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("R:R 1:${"%.1f".format(rec.rr)}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+
+                        // Quantitative reasoning snippet
+                        Text(
+                            rec.reasoning,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 2
+                        )
+
+                        // Trade levels
+                        Row(Modifier.fillMaxWidth().padding(top = 4.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+                            if (rec.isSynthetic) {
+                                Text("Synthetic Rise/Fall  ·  ${rec.horizon}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                            } else {
+                                Text("Entry: ${rec.entry}   SL: ${rec.sl}   TP: ${rec.tp1}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                            }
+                            Text("Details →", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+                }
+            }
+        }
+
+        // ================= SECTION 2: FOREX NEWS CALENDAR & ANALYSIS =================
+        item {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                border = CardDefaults.outlinedCardBorder(),
+                modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
+            ) {
+                Column(Modifier.padding(14.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Economic News Calendar & Analysis", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                        Spacer(Modifier.weight(1f))
+                        Surface(
+                            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.4f),
+                            shape = MaterialTheme.shapes.small
+                        ) {
+                            Text(
+                                "CALENDAR",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
+                    Text(
+                        "Forex economic calendar with impact classification levels and analytical post-release breakdown.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 2.dp, bottom = 8.dp)
+                    )
+
+                    // Upcoming vs Previous Mode Toggle
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(
+                            onClick = { ui.newsMode = "UPCOMING" },
+                            colors = if (ui.newsMode == "UPCOMING") ButtonDefaults.buttonColors() else ButtonDefaults.outlinedButtonColors(),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("Upcoming (${ui.upcomingNews.size})", style = MaterialTheme.typography.labelSmall)
+                        }
+                        Button(
+                            onClick = { ui.newsMode = "PREVIOUS" },
+                            colors = if (ui.newsMode == "PREVIOUS") ButtonDefaults.buttonColors() else ButtonDefaults.outlinedButtonColors(),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("Previous & Analyzed (${ui.previousNews.size})", style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+
+                    // Impact Level Filter Chips
+                    Row(
+                        Modifier.horizontalScroll(rememberScrollState()).padding(top = 6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        listOf(
+                            "ALL" to "All Impacts",
+                            "HIGH" to "🔴 High Impact",
+                            "MEDIUM" to "🟠 Medium",
+                            "LOW" to "🟢 Low"
+                        ).forEach { (code, label) ->
+                            val sel = ui.selectedNewsImpact == code
+                            FilterChip(
+                                selected = sel,
+                                onClick = {
+                                    ui.selectedNewsImpact = code
+                                    ui.refreshNews(scope)
+                                },
+                                label = { Text(label, style = MaterialTheme.typography.labelSmall) }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // News items list depending on selected mode
+        val newsList = if (ui.newsMode == "UPCOMING") ui.upcomingNews else ui.previousNews
+        if (newsList.isEmpty()) {
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f))
+                ) {
+                    Column(Modifier.padding(14.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text("Loading economic news calendar...", style = MaterialTheme.typography.bodySmall)
+                        Spacer(Modifier.height(8.dp))
+                        Button(onClick = { ui.refreshNews(scope) }) { Text("Load News") }
+                    }
+                }
+            }
+        } else {
+            items(newsList.take(8), key = { it.id }) { news ->
+                Card(
+                    onClick = { ui.selectedNewsItem = news },
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    border = CardDefaults.outlinedCardBorder(),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(Modifier.padding(12.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            // Currency tag
+                            Surface(
+                                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.25f),
+                                shape = MaterialTheme.shapes.extraSmall
+                            ) {
+                                Text(
+                                    news.currency,
+                                    fontWeight = FontWeight.Bold,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                            }
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                news.title,
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.weight(1f)
+                            )
+                            // Impact Badge
+                            Surface(
+                                color = when (news.impact.uppercase()) {
+                                    "HIGH" -> FritNegative.copy(alpha = 0.16f)
+                                    "MEDIUM" -> Color(0xFFB8860B).copy(alpha = 0.16f)
+                                    else -> FritPositive.copy(alpha = 0.16f)
+                                },
+                                shape = MaterialTheme.shapes.extraSmall
+                            ) {
+                                Text(
+                                    news.impact,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = when (news.impact.uppercase()) {
+                                        "HIGH" -> FritNegative
+                                        "MEDIUM" -> Color(0xFFB8860B)
+                                        else -> FritPositive
+                                    },
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
+
+                        // Figures & Timing row
+                        Row(
+                            Modifier.fillMaxWidth().padding(top = 4.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                "Forecast: ${news.forecast}   |   Previous: ${news.previous}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(
+                                fmtTimeAgo(news.time),
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+
+                        // For Previous news: show analytical breakdown block
+                        if (!news.isUpcoming && (news.actual != null || news.marketAnalysis != null)) {
+                            Surface(
+                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                                shape = MaterialTheme.shapes.small,
+                                modifier = Modifier.fillMaxWidth().padding(top = 6.dp)
+                            ) {
+                                Column(Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                        Text("Actual: ${news.actual ?: "-"}", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                                        news.outcome?.let {
+                                            Surface(
+                                                color = if (it == "BEAT") FritPositive.copy(alpha = 0.2f) else if (it == "MISSED") FritNegative.copy(alpha = 0.2f) else MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.3f),
+                                                shape = MaterialTheme.shapes.extraSmall
+                                            ) {
+                                                Text(
+                                                    it,
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = if (it == "BEAT") FritPositive else if (it == "MISSED") FritNegative else MaterialTheme.colorScheme.onSurface,
+                                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+                                    news.bias?.let {
+                                        Text("Market Sentiment: $it", fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.labelSmall)
+                                    }
+                                    news.marketAnalysis?.let {
+                                        Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2)
+                                    }
+                                    if (news.affectedPairs.isNotEmpty()) {
+                                        Text("Affected: ${news.affectedPairs.joinToString(", ")}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                                    }
+                                }
+                            }
+                        } else if (news.affectedPairs.isNotEmpty()) {
+                            Text(
+                                "Watch pairs: ${news.affectedPairs.joinToString(", ")}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(top = 2.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // ================= SECTION 3: RECENT SIGNALS GOTEN FEED =================
+        val signalsToShow = if (ui.recentSignalsList.isNotEmpty()) ui.recentSignalsList else ui.signals
+        item {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                border = CardDefaults.outlinedCardBorder(),
+                modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
+            ) {
+                Column(Modifier.padding(14.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Recent Signals Feed", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                        Spacer(Modifier.weight(1f))
+                        Text("${signalsToShow.size} signals", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Text(
+                        "Preserved list of the most recent confirmed signals generated across all engines.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 2.dp)
+                    )
+                }
+            }
+        }
+
+        if (signalsToShow.isEmpty()) {
+            item {
+                Text(
+                    "No signals recorded yet — tap 'Scan Now' above or enable pairs in Watchlist.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 4.dp)
+                )
+            }
+        } else {
+            items(signalsToShow.take(12), key = { it.id }) { s ->
+                Card(
+                    onClick = {
+                        ui.detailSignal = s
+                        TradingRepository.apply { scope.launch(Dispatchers.IO) { markRead(s.id) } }
+                    },
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    border = CardDefaults.outlinedCardBorder(),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(Modifier.padding(12.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(s.symbol, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                            Spacer(Modifier.width(8.dp))
+                            Surface(
+                                color = when (s.decision) {
+                                    SignalDecision.BUY, SignalDecision.CALL -> FritPositive.copy(alpha = 0.16f)
+                                    SignalDecision.SELL, SignalDecision.PUT -> FritNegative.copy(alpha = 0.16f)
+                                    else -> MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.3f)
+                                },
+                                shape = MaterialTheme.shapes.extraSmall
+                            ) {
+                                Text(
+                                    s.decision.name,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = when (s.decision) {
+                                        SignalDecision.BUY, SignalDecision.CALL -> FritPositive
+                                        SignalDecision.SELL, SignalDecision.PUT -> FritNegative
+                                        else -> MaterialTheme.colorScheme.onSurface
+                                    },
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                            }
+                            Spacer(Modifier.weight(1f))
+                            Text(
+                                fmtTimeAgo(s.timestamp),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Row(
+                            Modifier.fillMaxWidth().padding(top = 4.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text("Entry: ${s.entry}   SL: ${s.sl}   TP: ${s.tp1}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                            Text("R:R 1:${"%.1f".format(s.rr)}  ·  Conf ${s.confidence}%", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold)
+                        }
+                        if (s.reasoning.isNotBlank()) {
+                            Text(
+                                s.reasoning,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                modifier = Modifier.padding(top = 2.dp)
+                            )
+                        }
+                    }
+                }
             }
         }
     }
@@ -435,6 +1153,10 @@ private fun WatchlistScreen(ui: TradingUiState, scope: CoroutineScope) {
     var availableBots by remember { mutableStateOf<List<BotConfig>>(emptyList()) }
     var account by remember { mutableStateOf(TradingAccount()) }
     var balanceInput by remember { mutableStateOf("") }
+    // Lot sizing: AUTO = the lot-size engine picks every lot (Kelly vs balance
+    // + risk profile), FIXED = the user's own lot, used exactly as entered.
+    var autoLot by remember { mutableStateOf(true) }
+    var lotInput by remember { mutableStateOf("0.01") }
     var expandedPair by remember { mutableStateOf<String?>(null) }
 
     fun refreshBotPairs() {
@@ -469,12 +1191,16 @@ private fun WatchlistScreen(ui: TradingUiState, scope: CoroutineScope) {
                 is TradingRepository.Result.Ok -> launch(Dispatchers.Main) {
                     account = r.value
                     balanceInput = if (r.value.balance > 0) r.value.balance.toLong().toString() else ""
+                    autoLot = r.value.lotMode != "FIXED"
+                    lotInput = fmtLot(r.value.fixedLot)
                 }
                 is TradingRepository.Result.Err -> {
                     val cached = TradingCache.loadAccount()
                     if (cached != null) launch(Dispatchers.Main) {
                         account = cached
                         balanceInput = if (cached.balance > 0) cached.balance.toLong().toString() else ""
+                        autoLot = cached.lotMode != "FIXED"
+                        lotInput = fmtLot(cached.fixedLot)
                     }
                 }
             }
@@ -527,7 +1253,7 @@ private fun WatchlistScreen(ui: TradingUiState, scope: CoroutineScope) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text("Account balance", fontWeight = FontWeight.Bold)
-                        Text("Used to size every trade (Kelly). Saved to your account.",
+                        Text("Used to size every trade. Saved to your account.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
@@ -566,6 +1292,106 @@ private fun WatchlistScreen(ui: TradingUiState, scope: CoroutineScope) {
                     },
                     enabled = (balanceInput.toDoubleOrNull() ?: 0.0) > 0
                 ) { Text("Save balance") }
+
+                // ---- positions per signal ----
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Positions per signal", fontWeight = FontWeight.Bold)
+                        Text("How many entries to open each time a signal fires.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        (1..5).forEach { n ->
+                            FilterChip(
+                                selected = account.positionsPerSignal == n,
+                                onClick = {
+                                    gated { TradingRepository.saveAccount(positionsPerSignal = n) }
+                                    account = account.copy(positionsPerSignal = n)
+                                },
+                                label = { Text("$n", style = MaterialTheme.typography.bodySmall) }
+                            )
+                        }
+                    }
+                }
+
+                // ---- lot size: engine-chosen vs the user's own lot ----
+                Spacer(Modifier.height(8.dp))
+                Box(Modifier.fillMaxWidth().height(1.dp)
+                    .background(MaterialTheme.colorScheme.outlineVariant))
+                Spacer(Modifier.height(4.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(
+                        checked = autoLot,
+                        onCheckedChange = { on ->
+                            autoLot = on
+                            val lot = lotInput.toDoubleOrNull()?.coerceIn(0.01, 100.0)
+                            gated {
+                                TradingRepository.saveAccount(
+                                    lotMode = if (on) "AUTO" else "FIXED",
+                                    fixedLot = lot ?: account.fixedLot.coerceIn(0.01, 100.0)
+                                )
+                            }
+                            account = account.copy(
+                                lotMode = if (on) "AUTO" else "FIXED",
+                                fixedLot = (lot ?: account.fixedLot).coerceIn(0.01, 100.0)
+                            )
+                        }
+                    )
+                    Column(Modifier.weight(1f)) {
+                        Text("Let the bot choose the lot size",
+                            fontWeight = FontWeight.SemiBold,
+                            style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            if (autoLot)
+                                "Lot size engine on — every trade is sized from your balance, " +
+                                    "risk profile and the setup's stop distance."
+                            else "Auto sizing off — every bot trades ${fmtLot(account.fixedLot)} lot " +
+                                "(the per-trade risk guard still applies).",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+                if (!autoLot) {
+                    Spacer(Modifier.height(4.dp))
+                    Row(
+                        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        listOf(0.01, 0.05, 0.1, 0.25, 0.5, 1.0).forEach { preset ->
+                            FilterChip(
+                                selected = lotInput.toDoubleOrNull() == preset,
+                                onClick = { lotInput = fmtLot(preset) },
+                                label = { Text(fmtLot(preset), style = MaterialTheme.typography.bodySmall) }
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedTextField(
+                            value = lotInput,
+                            onValueChange = { lotInput = sanitizeLot(it) },
+                            label = { Text("Lot size") },
+                            singleLine = true,
+                            isError = !isValidLot(lotInput),
+                            supportingText = {
+                                if (!isValidLot(lotInput)) Text("0.01 – 100, up to 2 decimals")
+                            },
+                            modifier = Modifier.width(160.dp)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Button(
+                            onClick = {
+                                val lot = lotInput.toDoubleOrNull() ?: return@Button
+                                gated { TradingRepository.saveAccount(lotMode = "FIXED", fixedLot = lot) }
+                                account = account.copy(lotMode = "FIXED", fixedLot = lot)
+                            },
+                            enabled = isValidLot(lotInput)
+                        ) { Text("Save lot size") }
+                    }
+                }
             }
         }
         Spacer(Modifier.height(8.dp))
@@ -625,9 +1451,15 @@ private fun WatchlistScreen(ui: TradingUiState, scope: CoroutineScope) {
                                 }
                             })
                             IconButton(onClick = {
-                                scope.launch(Dispatchers.IO) { TradingRepository.removeWatch(w.symbol) }
+                                scope.launch(Dispatchers.IO) {
+                                    TradingRepository.removeWatch(w.symbol)
+                                    // Also drop any cached signals for this symbol so they
+                                    // stop appearing immediately, not just after the next scan.
+                                    TradingCache.saveSignals(TradingCache.loadSignals().filterNot { it.symbol == w.symbol.uppercase() })
+                                }
                                 ui.watchlist = ui.watchlist.filterNot { it.symbol == w.symbol }
                                 botPairs = botPairs.filterNot { it.pair == w.symbol }
+                                ui.signals = ui.signals.filterNot { it.symbol == w.symbol.uppercase() }
                             }) { Icon(Icons.Filled.Delete, "Remove") }
                         }
 
@@ -659,7 +1491,8 @@ private fun WatchlistScreen(ui: TradingUiState, scope: CoroutineScope) {
                                                     bot.name, w.symbol,
                                                     bot.allowedTimeframes.firstOrNull() ?: "5m",
                                                     tradeEnabled = false, signalEnabled = true,
-                                                    minConfidence = 60, maxTradesDay = 2
+                                                    minConfidence = 60, maxTradesDay = 2,
+                                                    positionsPerSignal = 1
                                                 )
                                             }
                                             refreshBotPairs()
@@ -696,7 +1529,8 @@ private fun WatchlistScreen(ui: TradingUiState, scope: CoroutineScope) {
                                                     TradingRepository.saveBotPair(
                                                         bp.botName, w.symbol, tf,
                                                         bp.tradeEnabled, bp.signalEnabled,
-                                                        bp.minConfidence, bp.maxTradesDay
+                                                        bp.minConfidence, bp.maxTradesDay,
+                                                        bp.positionsPerSignal
                                                     )
                                                 }
                                                 refreshBotPairs()
@@ -736,15 +1570,46 @@ private fun WatchlistScreen(ui: TradingUiState, scope: CoroutineScope) {
                                                 TradingRepository.saveBotPair(
                                                     bp.botName, w.symbol, bp.timeframe,
                                                     on, bp.signalEnabled,
-                                                    bp.minConfidence, bp.maxTradesDay
+                                                    bp.minConfidence, bp.maxTradesDay,
+                                                    bp.positionsPerSignal
                                                 )
                                             }
                                             refreshBotPairs()
                                         })
                                 }
+                                // Per-signal position count for this bot-pair.
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text("Positions/signal", style = MaterialTheme.typography.bodySmall,
+                                        modifier = Modifier.padding(start = 4.dp).weight(1f))
+                                    Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                                        (1..3).forEach { n ->
+                                            FilterChip(
+                                                selected = bp.positionsPerSignal == n,
+                                                onClick = {
+                                                    gated {
+                                                        TradingRepository.saveBotPair(
+                                                            bp.botName, w.symbol, bp.timeframe,
+                                                            bp.tradeEnabled, bp.signalEnabled,
+                                                            bp.minConfidence, bp.maxTradesDay,
+                                                            n
+                                                        )
+                                                    }
+                                                    refreshBotPairs()
+                                                },
+                                                label = { Text("$n", style = MaterialTheme.typography.bodySmall) },
+                                                modifier = Modifier.height(24.dp)
+                                            )
+                                        }
+                                    }
+                                }
                                 Text(
                                     if (bp.tradeEnabled)
-                                        "Trading + signalling on ${bp.timeframe} — sized by Kelly against your balance."
+                                        "Trading + signalling on ${bp.timeframe} — " +
+                                            if (account.lotMode == "FIXED")
+                                                "fixed ${fmtLot(account.fixedLot)} lot per trade, " +
+                                                "${bp.positionsPerSignal} position(s) per signal."
+                                            else "sized by the lot engine (Kelly) against your balance, " +
+                                                "${bp.positionsPerSignal} position(s) per signal."
                                     else "Signals only on ${bp.timeframe} — no orders are placed.",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -1309,7 +2174,54 @@ private fun PrefToggle(label: String, checked: Boolean, onChange: (Boolean) -> U
 
 private fun fmtN(v: Double): String = if (!v.isFinite()) "—" else v.toString()
 
+// ---- lot-size helpers ----
+// Retail MT5/FBS lots are 0.01-step, so the field accepts at most 2 decimals.
+private const val MIN_LOT = 0.01
+private const val MAX_LOT = 100.0
+
+private fun fmtLot(v: Double): String =
+    if (!v.isFinite() || v <= 0) "0.01"
+    else if (v == v.toLong().toDouble()) v.toLong().toString()
+    else "%.2f".format(v).trimEnd('0').trimEnd('.')
+
+private fun sanitizeLot(s: String): String {
+    val cleaned = s.filter { it.isDigit() || it == '.' }.take(6)
+    val firstDot = cleaned.indexOf('.')
+    if (firstDot < 0) return cleaned
+    return cleaned.substring(0, firstDot + 1) + cleaned.substring(firstDot + 1).replace(".", "").take(2)
+}
+
+private fun isValidLot(s: String): Boolean {
+    val v = s.toDoubleOrNull() ?: return false
+    return v in MIN_LOT..MAX_LOT
+}
+
 private fun fmtMoney(v: Double?): String {
     if (v == null || !v.isFinite()) return "—"
     return try { "%,.2f".format(v) } catch (_: Exception) { v.toString() }
+}
+
+private fun fmtTimeAgo(timestamp: Long): String {
+    val diff = System.currentTimeMillis() - timestamp
+    if (diff < 0) {
+        val future = -diff
+        val mins = future / 60000
+        val hrs = mins / 60
+        val days = hrs / 24
+        return when {
+            days > 0 -> "In ${days}d ${hrs % 24}h"
+            hrs > 0 -> "In ${hrs}h ${mins % 60}m"
+            mins > 0 -> "In ${mins}m"
+            else -> "Imminent"
+        }
+    }
+    val mins = diff / 60000
+    val hrs = mins / 60
+    val days = hrs / 24
+    return when {
+        days > 0 -> "${days}d ago"
+        hrs > 0 -> "${hrs}h ago"
+        mins > 0 -> "${mins}m ago"
+        else -> "Just now"
+    }
 }

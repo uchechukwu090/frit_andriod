@@ -168,6 +168,8 @@ object TradingCache {
             .put("userId", a.userId)
             .put("balance", a.balance)
             .put("riskProfile", a.riskProfile)
+            .put("lotMode", a.lotMode)
+            .put("fixedLot", a.fixedLot)
             .put("hasDerivToken", a.hasDerivToken)
             .put("derivTokenMode", a.derivTokenMode)
             .put("hasMt5", a.hasMt5)
@@ -183,6 +185,8 @@ object TradingCache {
             userId = o.optString("userId", ""),
             balance = o.optDouble("balance", 1000.0),
             riskProfile = o.optString("riskProfile", "MODERATE"),
+            lotMode = o.optString("lotMode", "AUTO").uppercase(),
+            fixedLot = o.optDouble("fixedLot", 0.01),
             hasDerivToken = o.optBoolean("hasDerivToken", false),
             derivTokenMode = o.optString("derivTokenMode", "platform"),
             hasMt5 = o.optBoolean("hasMt5", false),

@@ -42,9 +42,16 @@ fun AdsStudioScreen(
     var shots by remember { mutableStateOf<List<AdShot>>(emptyList()) }
     var shotsBusy by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf("") }
+    // Ads render through the same active models as Generate: a shot's
+    // duration/ratio is clamped to what the model actually supports.
+    var caps by remember { mutableStateOf(engine.cachedCapabilities() ?: com.frit.app.features.creative.CreativeCapabilities.FALLBACK) }
+    LaunchedEffect(Unit) { caps = engine.capabilities() }
 
     val imgPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        if (uri != null) scope.launch(Dispatchers.IO) { productImage = uriToDataUrl(ctx, uri, "image/*") }
+        if (uri != null) scope.launch(Dispatchers.IO) {
+            val data = uriToDataUrl(ctx, uri, "image/*")
+            launch(Dispatchers.Main) { productImage = data }
+        }
     }
 
     fun savePoster() {
@@ -168,7 +175,12 @@ fun AdsStudioScreen(
                                             shotsBusy = true
                                             try {
                                                 if (shot.kind == "video") {
-                                                    val r = JSONObject(NetworkClient.generateVideo(shot.prompt, shot.duration.coerceIn(2, 8), "720p", "9:16"))
+                                                    // Nearest supported duration + resolution and a
+                                                    // ratio the video model renders (vertical when it can).
+                                                    val shotDuration = caps.video.pickDuration(shot.duration) ?: 4
+                                                    val shotRes = caps.video.pickResolution("720p")
+                                                    val shotAspect = caps.video.pickAspect("9:16") ?: "9:16"
+                                                    val r = JSONObject(NetworkClient.generateVideo(shot.prompt, shotDuration, shotRes, shotAspect))
                                                     val locker = parsePlanGate(r)
                                                     if (locker != null) {
                                                         status = locker.message
@@ -183,7 +195,11 @@ fun AdsStudioScreen(
                                                         }
                                                     } else status = "Shot ${i + 1} failed: ${creativeErrorText(r)}"
                                                 } else {
-                                                    val r = JSONObject(NetworkClient.generateCreativeImage(shot.prompt, null, "16:9", 1, productImage))
+                                                    val r = JSONObject(NetworkClient.generateCreativeImage(
+                                                        shot.prompt, null,
+                                                        caps.image.pickAspect("16:9") ?: "16:9",
+                                                        1, productImage
+                                                    ))
                                                     val url = extractImageUrl(r)
                                                     if (url != null) {
                                                         shots = shots.mapIndexed { j, s -> if (j == i) s.copy(imageUrl = url) else s }

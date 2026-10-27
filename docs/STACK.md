@@ -30,6 +30,16 @@
   `OR_VECTOR_MODEL=recraft/recraft-v4-vector` (vector). Each model accepts different parameters —
   Recraft rejects `n`/`output_format` and only takes 1:1 / 4:3 / 3:4 / 16:9 / 9:16 / auto — so the
   request body is built per model family in `creative/imageProviders.js`.
+- **Model capabilities** (`GET /creative-suite/capabilities`, `creative/capabilities.js`): the single
+  source of truth for *what the active model can render*. It reads OpenRouter's own
+  `/images/models` and `/videos/models` metadata (30-min cache), matches the model configured for
+  each role (image, design, video, genjutsu, avatar) and returns its accepted aspect ratios,
+  durations, resolutions, `n`, reference support and audio. The app renders its option chips from
+  this response — Generate, Cinema, Ads Studio, Design Studio and the Settings page — so a creator
+  swap or a model downgrade changes the UI instead of silently snapping the user's choice away.
+  Unknown models fall back to a conservative default and report `source: "known"|"fallback"`; the
+  client never invents a capability. Example: `heygen-video-1` lists 5-15s at 480p/768p/2K, so the
+  studios stop offering the old hardcoded 4s/720p.
 - **On-Device Fallback**: Gemma 3n E2B for basic offline intent classification (Android only; server never calls it).
 
 ## Creative Agent (Design Studio + AI Director)

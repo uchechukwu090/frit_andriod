@@ -30,6 +30,8 @@ import com.frit.app.data.NetworkClient
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import com.frit.app.ui.creative.components.sniffBareBase64Mime
+import com.frit.app.ui.creative.components.rewriteDataUriIfMislabelled
 
 /**
  * Shared plan-gate parsing for every Creative/Trading surface.
@@ -72,11 +74,27 @@ fun JSONObject.strOrNull(key: String): String? {
     return optString(key).trim().takeIf { it.isNotEmpty() && !it.equals("null", ignoreCase = true) }
 }
 
-/** Extracts a displayable image source (http URL or data: URL); null if the server sent no pixels. */
+/**
+ * Extracts a displayable image source (http URL or data: URI); null if the
+ * server sent no pixels.
+ *
+ * Prefers the server-declared media_type when present, but falls back to a
+ * sniff of the bare base64 bytes so a webp/png/svg render is never wrongly
+ * wrapped as image/png (which is what made some AI renders show blank).
+ */
 fun extractImageUrl(r: JSONObject): String? {
     r.strOrNull("image_url")?.takeIf { it.length > 8 }?.let { return it }
-    r.strOrNull("image_b64")?.takeIf { it.length > 100 }?.let { b64 ->
-        return if (b64.startsWith("data:")) b64 else "data:image/png;base64,$b64"
+    val b64 = r.strOrNull("image_b64")
+    if (!b64.isNullOrBlank() && b64.length > 16) {
+        val sniffed = sniffBareBase64Mime(b64)
+        val mime = r.strOrNull("media_type")?.takeIf { it.isNotBlank() }
+            ?: sniffed
+            ?: "image/png"
+        return if (b64.startsWith("data:")) {
+            rewriteDataUriIfMislabelled(b64)
+        } else {
+            "data:$mime;base64,$b64"
+        }
     }
     r.strOrNull("url")?.takeIf { it.length > 8 }?.let { return it }
     return null

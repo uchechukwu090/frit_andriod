@@ -57,6 +57,12 @@ fun GenjutsuScreen(onClose: () -> Unit = {}, onSubscribe: () -> Unit = {}, onHan
     fun saveResult() {
         val f = videoFile
         if (f == null) { output = "Nothing to save yet"; return }
+        // Check BEFORE readBytes/Base64: a 100MB clip would be decoded into a
+        // 133MB string in memory, and the server rejects it anyway.
+        if (f.length() > 8_000_000) {
+            output = "Video too large to keep in the library (8MB max) — use Download instead."
+            return
+        }
         scope.launch {
             output = "Saving…"
             try {
@@ -70,13 +76,19 @@ fun GenjutsuScreen(onClose: () -> Unit = {}, onSubscribe: () -> Unit = {}, onHan
         }
     }
 
+    // Audit fix: state written from IO -> decode on IO, assign on Main.
     val vidPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        if (uri != null) scope.launch(Dispatchers.IO) { video = uriToDataUrl(ctx, uri, "video/*") }
+        if (uri != null) scope.launch(Dispatchers.IO) {
+            val data = uriToDataUrl(ctx, uri, "video/*")
+            launch(Dispatchers.Main) { video = data }
+        }
     }
     val refPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris ->
+        val slots = 30 - refs.size
+        if (slots <= 0) return@rememberLauncherForActivityResult
         scope.launch(Dispatchers.IO) {
-            val added = uris.take(30 - refs.size).mapNotNull { uriToDataUrl(ctx, it, "image/*") }
-            refs = (refs + added).take(30)
+            val added = uris.take(slots).mapNotNull { uriToDataUrl(ctx, it, "image/*") }
+            launch(Dispatchers.Main) { refs = (refs + added).take(30) }
         }
     }
 
@@ -88,15 +100,16 @@ fun GenjutsuScreen(onClose: () -> Unit = {}, onSubscribe: () -> Unit = {}, onHan
                 downloadEnabled = videoFile != null, onDownload = { downloadResult() },
                 exportEnabled = videoFile != null,
                 onExport = {
-                    if (videoFile != null) {
-                        try {
-                            val bytes = videoFile!!.readBytes()
-                            if (bytes.size <= 8 * 1024 * 1024) {
-                                engine.sendHandoff("data:video/mp4;base64," + android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP), "video")
-                                onHandoff("export")
-                            } else {
-                                output = "Video too large to hand off — download it instead"
-                            }
+                    val vf = videoFile
+                    if (vf != null) {
+                        // Size first: no point reading (and base64-ing) a clip
+                        // that is already over the handoff ceiling.
+                        if (vf.length() > 8 * 1024 * 1024) {
+                            output = "Video too large to hand off (8MB max) — download it instead"
+                        } else try {
+                            val bytes = vf.readBytes()
+                            engine.sendHandoff("data:video/mp4;base64," + android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP), "video")
+                            onHandoff("export")
                         } catch (e: Exception) {
                             output = "Export failed: ${e.message}"
                         }

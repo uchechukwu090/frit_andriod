@@ -98,7 +98,19 @@ Option style trading — a NEW module, not a remod of `strategy/options/`
 |---|---|---|---|
 | Pocket Rise/Fall (FX/metals/crypto) | Deriv (`strategy/deriv.js`) | Demo default | `DERIV_REAL_TOKEN` + `DERIV_LIVE=1` |
 | US stocks (intraday/longterm/`/trade`) | Alpaca (`strategy/alpaca.js`) | Paper default | `ALPACA_LIVE_KEY/SECRET` + `ALPACA_LIVE=1` |
-| FX/metals/CFD (intraday/longterm) | MT5 bridge (existing) | Paper while unset | `MT5_BRIDGE_URL` |
+| FX/metals/indices/energy/crypto CFD | MetaApi → FBS MT5 (`strategy/metaapi.js`) | Paper while unset | `METAAPI_TOKEN` + `METAAPI_ACCOUNT_ID` |
+| Legacy self-hosted MT5 HTTP bridge | `MT5_BRIDGE_URL` | Paper while unset | `MT5_BRIDGE_URL` (only used when MetaApi is unset) |
+
+MetaApi vs Deriv: **Rise/Fall (pocket bot) and every Deriv synthetic index stay
+on Deriv** — MetaApi/FBS does not list them. Everything an MT5 broker lists (FX,
+metals, indices, energy, crypto CFDs) goes to the FBS account. Check the live
+rail status (and the FBS balance) with `GET /api/trading/rails`.
+
+## Lot sizing: the user chooses
+`trading_account.lot_mode` is `AUTO` (the Kelly lot-size engine sizes every
+trade from balance + risk profile) or `FIXED` (`fixed_lot` is sent verbatim, no
+hard 0.01 cap). The app exposes this as a checkbox under *Account balance* in
+the Watchlist tab; the per-trade risk gate still refuses an oversized lot.
 Auto flags: `POCKET_DERIV_AUTO` (**default 0 = signals + paper only; set `=1`
 for demo auto-execution**), `ALPACA_AUTO` (default 1 = paper auto). Caps: stake/notional + 20/day +
 5 concurrent Deriv. Fills land in the monitor as `pocket-deriv` / `alpaca*`
@@ -137,6 +149,9 @@ and a Rise/Fall execution venue for pocket signals. Demo default.
 
 ## Files
 - `feed/candle_store.js` — tick→OHLC aggregation, 30m/4h rings, `feed_candles` table.
+  `getCandles(sym, iv, n)` returns the **newest** n bars, oldest→newest (it used
+  to take the oldest window when the ring held 300 rows, so consumers read
+  stale candles — fixed, pinned by `test/candlestore.test.mjs`).
 - `feed/ws_base.js` — reconnecting WS base (backoff, 23h proactive recycle).
 - `feed/binance_ws.js`, `feed/finnhub_ws.js` (+ free REST backfill), `feed/dukascopy_poll.js`.
 - `feed/live_feed.js` — routing, backfill budget, close-event scans, fan-out.
